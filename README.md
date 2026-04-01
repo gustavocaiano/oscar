@@ -10,6 +10,7 @@ Telegram-first personal assistant in Python with:
 - AI chat for normal messages
 - approval flow before AI-originated writes
 - proactive morning briefs, reminder alerts, hour reminders, and evening wrap-ups
+- optional local speech-to-text for Telegram voice notes
 
 ## Command style
 
@@ -80,6 +81,21 @@ Supported AI-originated write proposals in the current implementation:
 - create note
 - create reminder
 
+### Voice notes
+
+If local speech-to-text is enabled, you can send a **Telegram voice note** and the bot will:
+
+- download it temporarily on the server
+- transcribe it locally with `faster-whisper`
+- show you the recognized transcript
+- run the transcript through the same normal AI-chat flow
+
+Current scope:
+
+- Telegram **voice notes only**
+- normal `audio` files are not supported yet
+- strict size/duration limits are recommended for small CPU-only servers
+
 ## Environment variables
 
 Copy the template first:
@@ -110,6 +126,16 @@ Main variables:
 | `CALDAV_USERNAME` | for calendar | CalDAV username |
 | `CALDAV_PASSWORD` | for calendar | App-specific password recommended |
 | `CALDAV_CALENDAR_NAME` | no | Preferred calendar name |
+| `STT_ENABLED` | no | Enable local speech-to-text for Telegram voice notes |
+| `STT_MODEL` | no | Whisper model name, default `base` |
+| `STT_DEVICE` | no | Inference device, default `cpu` |
+| `STT_COMPUTE_TYPE` | no | Compute type, default `int8` |
+| `STT_LANGUAGE` | no | Optional fixed language code; leave empty for auto-detect |
+| `STT_VAD_FILTER` | no | Enable VAD filtering, default `true` |
+| `STT_MAX_DURATION_SECONDS` | no | Max supported voice-note duration, default `60` |
+| `STT_MAX_FILE_SIZE_MB` | no | Max supported voice-note size, default `10` |
+| `STT_MODEL_DIR` | no | Model cache directory, default `/models/whisper` |
+| `STT_ECHO_TRANSCRIPT` | no | Show recognized transcript back to the user, default `true` |
 
 ## iCloud / CalDAV setup
 
@@ -155,6 +181,40 @@ Example with CLIProxyAPI + Codex-style flow:
    ```
 
 If you use another backend, just point `BACKEND_BASE_URL`, `BACKEND_API_KEY`, and `BACKEND_MODEL` to it.
+
+## Local speech-to-text setup
+
+The bot can transcribe Telegram **voice notes** locally on the server.
+
+Recommended defaults for your current target shape:
+
+- CPU only
+- `STT_MODEL=base`
+- `STT_DEVICE=cpu`
+- `STT_COMPUTE_TYPE=int8`
+- `STT_MAX_DURATION_SECONDS=60`
+
+Example:
+
+```env
+STT_ENABLED=true
+STT_MODEL=base
+STT_DEVICE=cpu
+STT_COMPUTE_TYPE=int8
+STT_LANGUAGE=
+STT_VAD_FILTER=true
+STT_MAX_DURATION_SECONDS=60
+STT_MAX_FILE_SIZE_MB=10
+STT_MODEL_DIR=/models/whisper
+STT_ECHO_TRANSCRIPT=true
+```
+
+Notes:
+
+- this implementation uses `faster-whisper`
+- `faster-whisper` uses PyAV, so a system `ffmpeg` binary is **not required** for the initial voice-note flow
+- the Docker Compose file mounts a persistent model cache at `./data/whisper-models:/models/whisper`
+- only one transcription is processed at a time to protect small CPU-only servers
 
 ## Local development
 
@@ -208,6 +268,7 @@ docker compose --env-file .env.example config
    ```
 
 7. Confirm the proposed action with the inline button, or fallback to `/confirm <token>`.
+8. If speech-to-text is enabled, send a short Portuguese or English voice note and confirm the transcript is shown before the assistant reply.
 
 ## Notes
 
@@ -215,3 +276,4 @@ docker compose --env-file .env.example config
 - Calendar remains optional.
 - AI writes are approval-gated by design.
 - The current AI action set is intentionally limited and non-agentic.
+- Voice-note transcription is local-first, CPU-oriented, and intentionally limited to short voice notes in the initial release.

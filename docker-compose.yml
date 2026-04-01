@@ -22,9 +22,20 @@ services:
       CALDAV_USERNAME: ${CALDAV_USERNAME:-}
       CALDAV_PASSWORD: ${CALDAV_PASSWORD:-}
       CALDAV_CALENDAR_NAME: ${CALDAV_CALENDAR_NAME:-}
+      STT_ENABLED: ${STT_ENABLED:-false}
+      STT_MODEL: ${STT_MODEL:-base}
+      STT_DEVICE: ${STT_DEVICE:-cpu}
+      STT_COMPUTE_TYPE: ${STT_COMPUTE_TYPE:-int8}
+      STT_LANGUAGE: ${STT_LANGUAGE:-}
+      STT_VAD_FILTER: ${STT_VAD_FILTER:-true}
+      STT_MAX_DURATION_SECONDS: ${STT_MAX_DURATION_SECONDS:-60}
+      STT_MAX_FILE_SIZE_MB: ${STT_MAX_FILE_SIZE_MB:-10}
+      STT_MODEL_DIR: ${STT_MODEL_DIR:-/models/whisper}
+      STT_ECHO_TRANSCRIPT: ${STT_ECHO_TRANSCRIPT:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ./data:/data
+      - ./data/whisper-models:/models/whisper
     depends_on:
       - cliproxyapi
 
