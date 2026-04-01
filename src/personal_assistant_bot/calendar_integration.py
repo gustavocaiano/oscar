@@ -121,7 +121,11 @@ class CalendarService:
                 summary=summary,
                 description=description or "",
             )
-            component: Any = created.component
+            component: Any = getattr(created, "icalendar_component", None)
+            if component is None:
+                component = getattr(created, "component", None)
+            if component is None:
+                raise AttributeError("Created calendar event resource does not expose an iCalendar component")
             start_value, start_all_day, start_date = normalize_caldav_datetime(component.get("dtstart").dt)
             end_value, end_all_day, end_date = normalize_caldav_datetime(component.get("dtend").dt)
             return CalendarEvent(

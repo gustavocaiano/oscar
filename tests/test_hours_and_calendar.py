@@ -9,7 +9,7 @@ import pytest
 
 from personal_assistant_bot.config import Settings
 from personal_assistant_bot.hours import format_hours_total, format_subtotals, parse_getmm, parse_hours
-from personal_assistant_bot.calendar_integration import normalize_caldav_datetime
+from personal_assistant_bot.calendar_integration import CalendarService, normalize_caldav_datetime
 from personal_assistant_bot.services import AssistantError, AssistantService
 from personal_assistant_bot.storage import SQLiteStorage
 
@@ -118,3 +118,52 @@ def test_caldav_datetime_normalization_handles_all_day_values() -> None:
     assert all_day_date.hour == 0
     assert all_day_flag is True
     assert original_date.isoformat() == "2026-04-02"
+
+
+def test_create_event_uses_icalendar_component_and_closes_client() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeDateField:
+        def __init__(self, dt: datetime) -> None:
+            self.dt = dt
+
+    class FakeCreatedResource:
+        __slots__ = ("icalendar_component",)
+
+        def __init__(self, component: dict[str, object]) -> None:
+            self.icalendar_component = component
+
+    class FakeCalendar:
+        def __init__(self, component: dict[str, object]) -> None:
+            self._component = component
+
+        def save_event(self, *, dtstart, dtend, summary, description):
+            del dtstart, dtend, summary, description
+            return FakeCreatedResource(self._component)
+
+    start = datetime(2026, 4, 1, 14, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 4, 1, 15, 0, tzinfo=timezone.utc)
+    component = {
+        "summary": "From icalendar_component",
+        "dtstart": FakeDateField(start),
+        "dtend": FakeDateField(end),
+        "uid": "evt-ical-1",
+    }
+
+    service = CalendarService(url="https://example.test", username="user", password="pass", calendar_name=None)
+    fake_client = FakeClient()
+    fake_calendar = FakeCalendar(component)
+    service._get_calendar = lambda: (fake_client, fake_calendar)  # type: ignore[method-assign]
+
+    created_event = service.create_event(start=start, end=end, summary="ignored", description="ignored")
+
+    assert created_event.summary == "From icalendar_component"
+    assert created_event.start == start
+    assert created_event.end == end
+    assert created_event.uid == "evt-ical-1"
+    assert fake_client.closed is True
