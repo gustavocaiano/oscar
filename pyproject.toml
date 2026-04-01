@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-personal-assistant"
+version = "0.1.0"
+description = "Telegram-first personal assistant with deterministic tools and AI chat"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "caldav>=1.4,<2",
+  "httpx>=0.27,<0.29",
+  "python-telegram-bot[job-queue]>=21.6,<22",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<9",
+]
+
+[project.scripts]
+telegram-personal-assistant = "personal_assistant_bot.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

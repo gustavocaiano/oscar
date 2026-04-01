@@ -1,0 +1,613 @@
+from __future__ import annotations
+
+import secrets
+from dataclasses import dataclass
+from datetime import datetime, time, timedelta, timezone
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from personal_assistant_bot.calendar_integration import CalendarEvent, CalendarIntegrationError, CalendarService
+from personal_assistant_bot.config import Settings
+from personal_assistant_bot.hours import format_hours_total, format_subtotals, parse_hours
+from personal_assistant_bot.storage import (
+    ChatMessage,
+    ChatPreferences,
+    ListItem,
+    NoteItem,
+    ReminderItem,
+    SQLiteStorage,
+)
+
+
+class AssistantError(ValueError):
+    """Raised for user-facing assistant errors."""
+
+
+@dataclass(frozen=True)
+class ScheduledNotification:
+    chat_id: int
+    text: str
+    notification_type: str
+    reminder_id: int | None = None
+    claim_date: str | None = None
+    preference_updates: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class PendingApproval:
+    token: str
+    prompt_text: str
+    expires_at: str
+
+
+class AssistantService:
+    def __init__(self, *, storage: SQLiteStorage, calendar: CalendarService, settings: Settings):
+        self.storage = storage
+        self.calendar = calendar
+        self.settings = settings
+
+    def ensure_chat(self, *, chat_id: int, user_id: int) -> ChatPreferences:
+        return self.storage.ensure_chat_preferences(
+            chat_id=chat_id,
+            user_id=user_id,
+            timezone_name=self.settings.default_timezone,
+            morning_brief_time=self.settings.morning_brief_time,
+            hour_reminder_time=self.settings.hour_reminder_time,
+            evening_wrap_up_time=self.settings.evening_wrap_up_time,
+        )
+
+    def _preferences(self, *, chat_id: int, user_id: int) -> ChatPreferences:
+        return self.ensure_chat(chat_id=chat_id, user_id=user_id)
+
+    def _local_now(self, preferences: ChatPreferences, now_utc: datetime | None = None) -> datetime:
+        reference = now_utc or datetime.now(timezone.utc)
+        return reference.astimezone(ZoneInfo(preferences.timezone))
+
+    def parse_local_datetime(self, *, chat_id: int, user_id: int, raw_text: str) -> datetime:
+        preferences = self._preferences(chat_id=chat_id, user_id=user_id)
+        try:
+            naive = datetime.strptime(raw_text.strip(), "%Y-%m-%d %H:%M")
+        except ValueError as exc:
+            raise AssistantError("Use datetime format YYYY-MM-DD HH:MM") from exc
+        return naive.replace(tzinfo=ZoneInfo(preferences.timezone))
+
+    def create_items(self, *, chat_id: int, user_id: int, kind: str, titles: list[str]) -> list[int]:
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        cleaned = [title.strip() for title in titles if title.strip()]
+        if not cleaned:
+            raise AssistantError("Please provide at least one item")
+        return [
+            self.storage.create_list_item(user_id=user_id, chat_id=chat_id, kind=kind, title=title)
+            for title in cleaned
+        ]
+
+    def list_items(self, *, chat_id: int, user_id: int, kind: str, include_done: bool = False) -> list[ListItem]:
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        return self.storage.list_items(user_id=user_id, chat_id=chat_id, kind=kind, include_done=include_done)
+
+    def rename_item(self, *, chat_id: int, user_id: int, kind: str, item_id: int, title: str) -> None:
+        if not title.strip():
+            raise AssistantError("Please provide a new title")
+        updated = self.storage.update_list_item(
+            user_id=user_id, chat_id=chat_id, kind=kind, item_id=item_id, title=title
+        )
+        if not updated:
+            raise AssistantError(f"{kind.title()} item #{item_id} was not found")
+
+    def complete_item(self, *, chat_id: int, user_id: int, kind: str, item_id: int) -> None:
+        updated = self.storage.mark_list_item_done(
+            user_id=user_id, chat_id=chat_id, kind=kind, item_id=item_id
+        )
+        if not updated:
+            raise AssistantError(f"{kind.title()} item #{item_id} was not found")
+
+    def add_note(self, *, chat_id: int, user_id: int, kind: str, content: str) -> int:
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        if not content.strip():
+            raise AssistantError("Please provide note content")
+        return self.storage.create_note(user_id=user_id, chat_id=chat_id, kind=kind, content=content)
+
+    def list_notes(
+        self, *, chat_id: int, user_id: int, kind: str | None = None, limit: int = 10, query: str | None = None
+    ) -> list[NoteItem]:
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        return self.storage.list_notes(user_id=user_id, chat_id=chat_id, kind=kind, limit=limit, query=query)
+
+    def create_reminder(self, *, chat_id: int, user_id: int, due_text: str, message: str) -> int:
+        if not message.strip():
+            raise AssistantError("Please provide reminder text")
+        due_local = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=due_text)
+        due_utc = due_local.astimezone(timezone.utc).isoformat()
+        return self.storage.create_reminder(user_id=user_id, chat_id=chat_id, message=message, due_at=due_utc)
+
+    def list_reminders(self, *, chat_id: int, user_id: int, pending_only: bool = False) -> list[ReminderItem]:
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        return self.storage.list_reminders(user_id=user_id, chat_id=chat_id, pending_only=pending_only)
+
+    def update_reminder(self, *, chat_id: int, user_id: int, reminder_id: int, status: str) -> None:
+        updated = self.storage.update_reminder_status(
+            user_id=user_id, chat_id=chat_id, reminder_id=reminder_id, status=status
+        )
+        if not updated:
+            raise AssistantError(f"Reminder #{reminder_id} was not found")
+
+    def add_hours(self, *, chat_id: int, user_id: int, raw_text: str) -> str:
+        preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        hours = parse_hours(raw_text)
+        local_today = self._local_now(preferences).date().isoformat()
+        self.storage.create_hour_entry(
+            user_id=user_id,
+            chat_id=chat_id,
+            entry_date=local_today,
+            hours=hours,
+            raw_text=raw_text,
+        )
+        day_total = self.storage.get_day_hours(user_id=user_id, chat_id=chat_id, entry_date=local_today)
+        now_local = self._local_now(preferences)
+        month_total = self.storage.aggregate_month_hours(
+            user_id=user_id,
+            chat_id=chat_id,
+            year=now_local.year,
+            month=now_local.month,
+        )
+        return format_subtotals(day_total, month_total)
+
+    def get_month_hours(self, *, chat_id: int, user_id: int, month: int | None = None) -> str:
+        preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        now_local = self._local_now(preferences)
+        target_month = month or now_local.month
+        total = self.storage.aggregate_month_hours(
+            user_id=user_id,
+            chat_id=chat_id,
+            year=now_local.year,
+            month=target_month,
+        )
+        return f"Month {target_month:02d} subtotal: {format_hours_total(total)}"
+
+    def list_calendar_events(self, *, chat_id: int, user_id: int, days: int = 7) -> list[CalendarEvent]:
+        preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        if not self.calendar.configured:
+            raise AssistantError("Calendar integration is not configured")
+        local_now = self._local_now(preferences)
+        local_end = local_now + timedelta(days=max(1, days))
+        try:
+            return self.calendar.list_events(start=local_now, end=local_end)
+        except CalendarIntegrationError as exc:
+            raise AssistantError(str(exc)) from exc
+
+    def create_calendar_event(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        start_text: str,
+        end_text: str,
+        summary: str,
+        description: str | None = None,
+    ) -> CalendarEvent:
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        if not self.calendar.configured:
+            raise AssistantError("Calendar integration is not configured")
+        start = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=start_text)
+        end = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=end_text)
+        if end <= start:
+            raise AssistantError("Calendar event end time must be after the start time")
+        try:
+            return self.calendar.create_event(start=start, end=end, summary=summary.strip(), description=description)
+        except CalendarIntegrationError as exc:
+            raise AssistantError(str(exc)) from exc
+
+    def get_tool_snapshot(self, *, chat_id: int, user_id: int) -> dict[str, Any]:
+        preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        local_now = self._local_now(preferences)
+        tasks = self.list_items(chat_id=chat_id, user_id=user_id, kind="task")[:20]
+        shopping = self.list_items(chat_id=chat_id, user_id=user_id, kind="shopping")[:20]
+        reminders = self.list_reminders(chat_id=chat_id, user_id=user_id, pending_only=True)[:10]
+        notes = self.list_notes(chat_id=chat_id, user_id=user_id, limit=8)
+        month_total = self.storage.aggregate_month_hours(
+            user_id=user_id,
+            chat_id=chat_id,
+            year=local_now.year,
+            month=local_now.month,
+        )
+        agenda_entries: list[CalendarEvent] = []
+        if self.calendar.configured:
+            try:
+                agenda_entries = self.calendar.list_events(start=local_now, end=local_now + timedelta(days=2))[:8]
+            except CalendarIntegrationError:
+                agenda_entries = []
+
+        return {
+            "now_local": local_now.isoformat(),
+            "timezone": preferences.timezone,
+            "tasks": [{"id": item.id, "title": item.title, "done": item.done} for item in tasks],
+            "shopping": [{"id": item.id, "title": item.title, "done": item.done} for item in shopping],
+            "reminders": [
+                {
+                    "id": item.id,
+                    "message": item.message,
+                    "due_at": item.due_at,
+                    "due_at_local": self._format_utc_iso_for_chat(item.due_at, preferences),
+                    "status": item.status,
+                }
+                for item in reminders
+            ],
+            "notes": [{"id": item.id, "kind": item.kind, "content": item.content} for item in notes],
+            "hours": {"month_total": format_hours_total(month_total)},
+            "agenda": [
+                {
+                    "summary": event.summary,
+                    "start": event.start.isoformat(),
+                    "end": event.end.isoformat(),
+                    "start_local": event.start_date.isoformat()
+                    if getattr(event, "all_day", False) and getattr(event, "start_date", None) is not None
+                    else self._format_datetime_for_chat(
+                        event.start, preferences, all_day=getattr(event, "all_day", False)
+                    ),
+                    "end_local": event.end_date.isoformat()
+                    if getattr(event, "all_day", False) and getattr(event, "end_date", None) is not None
+                    else self._format_datetime_for_chat(
+                        event.end, preferences, all_day=getattr(event, "all_day", False)
+                    ),
+                    "all_day": getattr(event, "all_day", False),
+                }
+                for event in agenda_entries
+            ],
+        }
+
+    def create_pending_approval(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        action_type: str,
+        payload: dict[str, Any],
+        prompt_text: str,
+    ) -> PendingApproval:
+        token = secrets.token_hex(3)
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=self.settings.approval_ttl_minutes)).isoformat()
+        self.storage.create_approval(
+            token=token,
+            user_id=user_id,
+            chat_id=chat_id,
+            action_type=action_type,
+            payload=payload,
+            prompt_text=prompt_text,
+            expires_at=expires_at,
+        )
+        return PendingApproval(token=token, prompt_text=prompt_text, expires_at=expires_at)
+
+    def _execute_action(self, *, chat_id: int, user_id: int, action_type: str, payload: dict[str, Any]) -> str:
+        if action_type == "create_task":
+            title = str(payload.get("title", "")).strip()
+            if not title:
+                raise AssistantError("Pending action is missing a task title")
+            item_ids = self.create_items(chat_id=chat_id, user_id=user_id, kind="task", titles=[title])
+            return f"Created task #{item_ids[0]}"
+        if action_type == "add_shopping_items":
+            raw_items = payload.get("items")
+            if isinstance(raw_items, str):
+                items = [raw_items]
+            elif isinstance(raw_items, list):
+                items = [str(item).strip() for item in raw_items if str(item).strip()]
+            else:
+                items = []
+            if not items:
+                raise AssistantError("Pending action is missing shopping items")
+            item_ids = self.create_items(chat_id=chat_id, user_id=user_id, kind="shopping", titles=items)
+            return f"Added {len(item_ids)} shopping item(s)"
+        if action_type == "create_note":
+            content = str(payload.get("content", "")).strip()
+            if not content:
+                raise AssistantError("Pending action is missing note content")
+            note_id = self.add_note(
+                chat_id=chat_id,
+                user_id=user_id,
+                kind=payload.get("kind", "note"),
+                content=content,
+            )
+            return f"Saved note #{note_id}"
+        if action_type == "create_reminder":
+            when_local = str(payload.get("when_local", "")).strip()
+            message = str(payload.get("message", "")).strip()
+            if not when_local or not message:
+                raise AssistantError("Pending reminder action is missing its time or message")
+            reminder_id = self.create_reminder(
+                chat_id=chat_id,
+                user_id=user_id,
+                due_text=when_local,
+                message=message,
+            )
+            return f"Created reminder #{reminder_id}"
+        raise AssistantError(f"Unsupported approval action: {action_type}")
+
+    def confirm_approval(self, *, chat_id: int, user_id: int, token: str) -> str:
+        approval = self.storage.get_approval(token=token, user_id=user_id, chat_id=chat_id)
+        if approval is None:
+            raise AssistantError("Approval token was not found")
+        if approval.status != "pending":
+            raise AssistantError(f"Approval token is already {approval.status}")
+        if datetime.fromisoformat(approval.expires_at) < datetime.now(timezone.utc):
+            self.storage.transition_approval_status(token=token, expected_status="pending", new_status="expired")
+            raise AssistantError("Approval token has expired")
+        try:
+            if not self.storage.transition_approval_status(token=token, expected_status="pending", new_status="executing"):
+                approval = self.storage.get_approval(token=token, user_id=user_id, chat_id=chat_id)
+                current_status = approval.status if approval else "missing"
+                raise AssistantError(f"Approval token is already {current_status}")
+            result = self._execute_action(
+                chat_id=chat_id,
+                user_id=user_id,
+                action_type=approval.action_type,
+                payload=approval.payload,
+            )
+        except Exception as exc:
+            self.storage.transition_approval_status(token=token, expected_status="executing", new_status="pending")
+            if isinstance(exc, AssistantError):
+                raise
+            raise AssistantError(str(exc)) from exc
+        self.storage.transition_approval_status(token=token, expected_status="executing", new_status="executed")
+        return result
+
+    def reject_approval(self, *, chat_id: int, user_id: int, token: str) -> str:
+        approval = self.storage.get_approval(token=token, user_id=user_id, chat_id=chat_id)
+        if approval is None:
+            raise AssistantError("Approval token was not found")
+        if not self.storage.transition_approval_status(token=token, expected_status="pending", new_status="rejected"):
+            latest = self.storage.get_approval(token=token, user_id=user_id, chat_id=chat_id)
+            current_status = latest.status if latest else "missing"
+            raise AssistantError(f"Approval token is already {current_status}")
+        return f"Rejected pending action {token}"
+
+    def add_chat_history(self, *, chat_id: int, user_id: int, role: str, content: str) -> None:
+        self.storage.add_chat_message(user_id=user_id, chat_id=chat_id, role=role, content=content)
+
+    def get_chat_history(self, *, chat_id: int, user_id: int) -> list[ChatMessage]:
+        return self.storage.get_recent_chat_messages(
+            user_id=user_id,
+            chat_id=chat_id,
+            limit=self.settings.chat_history_limit,
+        )
+
+    def build_briefing(self, *, chat_id: int, user_id: int, now_utc: datetime | None = None, label: str = "Briefing") -> str:
+        del now_utc
+        snapshot = self.get_tool_snapshot(chat_id=chat_id, user_id=user_id)
+        lines = [f"{label} ({snapshot['now_local'][:16].replace('T', ' ')})"]
+
+        tasks = snapshot["tasks"]
+        shopping = snapshot["shopping"]
+        reminders = snapshot["reminders"]
+        notes = snapshot["notes"]
+        agenda = snapshot["agenda"]
+
+        lines.append(f"- Open tasks: {len(tasks)}")
+        if tasks:
+            for item in tasks[:5]:
+                lines.append(f"  • {item['title']}")
+
+        lines.append(f"- Shopping items: {len(shopping)}")
+        if shopping:
+            for item in shopping[:5]:
+                lines.append(f"  • {item['title']}")
+
+        lines.append(f"- Pending reminders: {len(reminders)}")
+        if reminders:
+            for item in reminders[:5]:
+                lines.append(f"  • {item['message']} @ {item['due_at_local']}")
+
+        lines.append(f"- Notes/inbox items: {len(notes)}")
+        if notes:
+            for item in notes[:3]:
+                lines.append(f"  • [{item['kind']}] {item['content'][:70]}")
+
+        lines.append(f"- Month hours: {snapshot['hours']['month_total']}")
+
+        if agenda:
+            lines.append("- Upcoming calendar:")
+            for event in agenda[:5]:
+                if event["all_day"]:
+                    lines.append(f"  • {event['start_local']} — {event['summary']} (all day)")
+                else:
+                    lines.append(f"  • {event['start_local']} — {event['summary']}")
+        else:
+            lines.append("- Upcoming calendar: none or unavailable")
+
+        return "\n".join(lines)
+
+    def get_due_notifications(self, *, now_utc: datetime | None = None) -> list[ScheduledNotification]:
+        reference = now_utc or datetime.now(timezone.utc)
+        due_notifications: list[ScheduledNotification] = []
+
+        for reminder in self.storage.claim_due_reminders(
+            due_before=reference.isoformat(),
+            stale_after_seconds=max(60, self.settings.reminder_scan_seconds * 5),
+        ):
+            preferences = self.storage.get_chat_preferences(reminder.chat_id)
+            if not preferences.reminder_alerts_enabled:
+                self.storage.reset_reminder_pending(reminder.id)
+                continue
+            local_due = datetime.fromisoformat(reminder.due_at).astimezone(ZoneInfo(preferences.timezone))
+            due_notifications.append(
+                ScheduledNotification(
+                    chat_id=reminder.chat_id,
+                    text=f"Reminder: {reminder.message}\nDue: {local_due.strftime('%Y-%m-%d %H:%M')}",
+                    notification_type="reminder",
+                    reminder_id=reminder.id,
+                )
+            )
+
+        for preferences in self.storage.list_chat_preferences():
+            local_now = self._local_now(preferences, reference)
+            local_date = local_now.date().isoformat()
+
+            if self._should_send_daily(
+                enabled=preferences.morning_brief_enabled,
+                local_now=local_now,
+                target_time=preferences.morning_brief_time,
+                last_sent_on=preferences.last_morning_brief_on,
+            ) and self.storage.claim_scheduled_notification(
+                chat_id=preferences.chat_id,
+                notification_type="morning_brief",
+                claim_date=local_date,
+                stale_after_seconds=max(60, self.settings.reminder_scan_seconds * 5),
+            ):
+                due_notifications.append(
+                    ScheduledNotification(
+                        chat_id=preferences.chat_id,
+                        text=self.build_briefing(
+                            chat_id=preferences.chat_id,
+                            user_id=preferences.user_id,
+                            label="Morning briefing",
+                        ),
+                        notification_type="morning_brief",
+                        claim_date=local_date,
+                        preference_updates={"last_morning_brief_on": local_date},
+                    )
+                )
+
+            if self._should_send_daily(
+                enabled=preferences.hour_reminder_enabled,
+                local_now=local_now,
+                target_time=preferences.hour_reminder_time,
+                last_sent_on=preferences.last_hour_reminder_on,
+            ) and self.storage.claim_scheduled_notification(
+                chat_id=preferences.chat_id,
+                notification_type="hour_reminder",
+                claim_date=local_date,
+                stale_after_seconds=max(60, self.settings.reminder_scan_seconds * 5),
+            ):
+                due_notifications.append(
+                    ScheduledNotification(
+                        chat_id=preferences.chat_id,
+                        text="Reminder: log your hours with /h add <hours> if you worked today.",
+                        notification_type="hour_reminder",
+                        claim_date=local_date,
+                        preference_updates={"last_hour_reminder_on": local_date},
+                    )
+                )
+
+            if self._should_send_daily(
+                enabled=preferences.evening_wrap_up_enabled,
+                local_now=local_now,
+                target_time=preferences.evening_wrap_up_time,
+                last_sent_on=preferences.last_evening_wrap_up_on,
+            ) and self.storage.claim_scheduled_notification(
+                chat_id=preferences.chat_id,
+                notification_type="evening_wrap_up",
+                claim_date=local_date,
+                stale_after_seconds=max(60, self.settings.reminder_scan_seconds * 5),
+            ):
+                due_notifications.append(
+                    ScheduledNotification(
+                        chat_id=preferences.chat_id,
+                        text=self.build_briefing(
+                            chat_id=preferences.chat_id,
+                            user_id=preferences.user_id,
+                            label="Evening wrap-up",
+                        ),
+                        notification_type="evening_wrap_up",
+                        claim_date=local_date,
+                        preference_updates={"last_evening_wrap_up_on": local_date},
+                    )
+                )
+
+        return due_notifications
+
+    def mark_notification_delivered(self, notification: ScheduledNotification) -> None:
+        if notification.reminder_id is not None:
+            self.storage.mark_reminder_sent(notification.reminder_id)
+        if notification.claim_date is not None:
+            self.storage.mark_scheduled_notification_sent(
+                chat_id=notification.chat_id,
+                notification_type=notification.notification_type,
+                claim_date=notification.claim_date,
+            )
+        if notification.preference_updates:
+            self.storage.update_chat_preferences(notification.chat_id, **notification.preference_updates)
+
+    def revert_notification_claim(self, notification: ScheduledNotification) -> None:
+        if notification.reminder_id is not None:
+            self.storage.reset_reminder_pending(notification.reminder_id)
+        if notification.claim_date is not None:
+            self.storage.release_scheduled_notification_claim(
+                chat_id=notification.chat_id,
+                notification_type=notification.notification_type,
+                claim_date=notification.claim_date,
+            )
+
+    def _should_send_daily(
+        self,
+        *,
+        enabled: bool,
+        local_now: datetime,
+        target_time: str,
+        last_sent_on: str | None,
+    ) -> bool:
+        if not enabled:
+            return False
+        try:
+            scheduled_time = time.fromisoformat(target_time)
+        except ValueError:
+            return False
+        if local_now.date().isoformat() == last_sent_on:
+            return False
+        return local_now.time().replace(second=0, microsecond=0) >= scheduled_time
+
+    def get_preferences_summary(self, *, chat_id: int, user_id: int) -> str:
+        preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        return (
+            f"Timezone: {preferences.timezone}\n"
+            f"Morning brief: {'on' if preferences.morning_brief_enabled else 'off'} at {preferences.morning_brief_time}\n"
+            f"Hour reminder: {'on' if preferences.hour_reminder_enabled else 'off'} at {preferences.hour_reminder_time}\n"
+            f"Evening wrap-up: {'on' if preferences.evening_wrap_up_enabled else 'off'} at {preferences.evening_wrap_up_time}\n"
+            f"Reminder alerts: {'on' if preferences.reminder_alerts_enabled else 'off'}"
+        )
+
+    def update_preference_toggle(self, *, chat_id: int, user_id: int, key: str, enabled: bool) -> str:
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        mapping = {
+            "morning": "morning_brief_enabled",
+            "hours": "hour_reminder_enabled",
+            "evening": "evening_wrap_up_enabled",
+            "reminders": "reminder_alerts_enabled",
+        }
+        if key not in mapping:
+            raise AssistantError("Use one of: morning, hours, evening, reminders")
+        self.storage.update_chat_preferences(chat_id, **{mapping[key]: 1 if enabled else 0})
+        return f"Set {key} to {'on' if enabled else 'off'}"
+
+    def update_preference_time(self, *, chat_id: int, user_id: int, key: str, time_value: str) -> str:
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        try:
+            time.fromisoformat(time_value)
+        except ValueError as exc:
+            raise AssistantError("Use time format HH:MM") from exc
+        mapping = {
+            "morning": "morning_brief_time",
+            "hours": "hour_reminder_time",
+            "evening": "evening_wrap_up_time",
+        }
+        if key not in mapping:
+            raise AssistantError("Use one of: morning, hours, evening")
+        self.storage.update_chat_preferences(chat_id, **{mapping[key]: time_value})
+        return f"Updated {key} time to {time_value}"
+
+    def update_timezone(self, *, chat_id: int, user_id: int, timezone_name: str) -> str:
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        try:
+            ZoneInfo(timezone_name)
+        except Exception as exc:  # pragma: no cover - depends on system tz database
+            raise AssistantError("Invalid timezone name") from exc
+        self.storage.update_chat_preferences(chat_id, timezone=timezone_name)
+        return f"Updated timezone to {timezone_name}"
+
+    def _format_utc_iso_for_chat(self, iso_value: str, preferences: ChatPreferences) -> str:
+        return self._format_datetime_for_chat(datetime.fromisoformat(iso_value), preferences)
+
+    def _format_datetime_for_chat(self, value: datetime, preferences: ChatPreferences, *, all_day: bool = False) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=ZoneInfo(preferences.timezone))
+        local_value = value.astimezone(ZoneInfo(preferences.timezone))
+        if all_day:
+            return local_value.strftime("%Y-%m-%d")
+        return local_value.strftime("%Y-%m-%d %H:%M")

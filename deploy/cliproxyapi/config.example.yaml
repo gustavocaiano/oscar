@@ -1,0 +1,14 @@
+host: ""
+port: 8317
+auth-dir: "/root/.cli-proxy-api"
+debug: false
+logging-to-file: true
+usage-statistics-enabled: false
+request-retry: 3
+
+quota-exceeded:
+  switch-project: true
+  switch-preview-model: true
+
+api-keys:
+  - "replace-with-your-cli-proxy-key"
