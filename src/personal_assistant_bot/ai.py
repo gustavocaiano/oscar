@@ -21,10 +21,17 @@ class AIBackendError(RuntimeError):
 class AIResponse:
     reply: str
     proposed_action: dict[str, Any] | None = None
+    proposal_error: str | None = None
 
 
 class OpenAICompatibleAI:
-    SUPPORTED_ACTIONS = {"create_task", "add_shopping_items", "create_note", "create_reminder"}
+    SUPPORTED_ACTIONS = {
+        "create_task",
+        "add_shopping_items",
+        "create_note",
+        "create_reminder",
+        "create_calendar_event",
+    }
 
     def __init__(self, *, base_url: str | None, api_key: str | None, model: str | None, timeout_seconds: float):
         self.base_url = base_url.rstrip("/") if base_url else None
@@ -51,9 +58,15 @@ class OpenAICompatibleAI:
                 "role": "system",
                 "content": (
                     "You are a Telegram personal assistant. You may read the provided personal data snapshot to help the user. "
-                    "If the user is asking to create or change structured assistant data, you may propose one supported action but you must not assume it has already happened. "
-                    "Supported actions: create_task, add_shopping_items, create_note, create_reminder. "
-                    "When proposing create_reminder, payload.when_local must use exact format YYYY-MM-DD HH:MM. "
+                    "If the user is asking to create or change structured assistant data, you may propose exactly one supported action, but you must never say the action already happened because the app will ask the user to confirm it first. "
+                    "For write intents, do exactly one of these: ask one short follow-up question if required fields are missing or ambiguous; OR return a valid proposed_action. "
+                    "Supported actions: create_task, add_shopping_items, create_note, create_reminder, create_calendar_event. "
+                    "If the user is confirming a reminder or calendar action that was just described earlier in the chat, return the structured proposed_action instead of repeating prose. "
+                    "When proposing create_reminder, payload.when_local must use exact format YYYY-MM-DD HH:MM and payload.message must be non-empty. "
+                    "When proposing create_calendar_event, payload.summary, payload.start_local, and payload.end_local are required, and the date/time values must use exact format YYYY-MM-DD HH:MM. payload.description is optional. "
+                    "proposed_action may also include a short label string, but it is optional. "
+                    "Examples: {\"reply\":\"Please confirm this reminder.\",\"proposed_action\":{\"action_type\":\"create_reminder\",\"payload\":{\"when_local\":\"2026-04-02 20:00\",\"message\":\"Jesus memorial\"},\"label\":\"Create reminder: Jesus memorial\"}} "
+                    "and {\"reply\":\"What time should it end?\",\"proposed_action\":null}. "
                     "Return strict JSON only with this shape: {\"reply\": string, \"proposed_action\": null|object}."
                 ),
             },
@@ -92,7 +105,11 @@ class OpenAICompatibleAI:
         content = self._extract_content(data)
         parsed = self._parse_json(content)
         if parsed is None:
-            return AIResponse(reply=content.strip() or "I could not generate a response.")
+            logger.warning("AI response was not valid JSON: %s", content)
+            return AIResponse(
+                reply=content.strip() or "I could not generate a response.",
+                proposal_error="unstructured_response",
+            )
 
         reply = str(parsed.get("reply") or "").strip() or "I processed your message."
         proposed_action = parsed.get("proposed_action")
@@ -102,7 +119,7 @@ class OpenAICompatibleAI:
         action_type = proposed_action.get("action_type")
         if action_type not in self.SUPPORTED_ACTIONS:
             logger.warning("Ignoring unsupported AI action: %s", action_type)
-            return AIResponse(reply=reply)
+            return AIResponse(reply=reply, proposal_error=f"unsupported_action:{action_type}")
         return AIResponse(reply=reply, proposed_action=proposed_action)
 
     def _extract_content(self, payload: dict[str, Any]) -> str:

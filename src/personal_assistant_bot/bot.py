@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 import re
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 from zoneinfo import ZoneInfo
@@ -38,6 +39,15 @@ logger = logging.getLogger(__name__)
 APPROVAL_CALLBACK_PATTERN = re.compile(r"^(approve|reject):([0-9a-f]+)$")
 
 
+@dataclass
+class DraftState:
+    flow_type: str
+    step: str
+    payload: dict[str, str]
+    source: str
+    expires_at: datetime
+
+
 ROOT_COMMANDS = [
     BotCommand("start", "Show welcome message"),
     BotCommand("help", "Show grouped command help"),
@@ -48,6 +58,7 @@ ROOT_COMMANDS = [
     BotCommand("cal", "Calendar commands"),
     BotCommand("h", "Hour tracking commands"),
     BotCommand("pref", "Preference commands"),
+    BotCommand("cancel", "Cancel current interactive flow"),
     BotCommand("confirm", "Confirm a pending AI action"),
     BotCommand("reject", "Reject a pending AI action"),
 ]
@@ -66,6 +77,7 @@ class PersonalAssistantBot:
         self.assistant = assistant
         self.ai_client = ai_client
         self.transcriber = transcriber
+        self._drafts: dict[tuple[int, int], DraftState] = {}
 
     def build_application(self) -> Application:
         application = ApplicationBuilder().token(self.settings.telegram_bot_token).post_init(self._post_init).build()
@@ -78,6 +90,7 @@ class PersonalAssistantBot:
         application.add_handler(CommandHandler("cal", self.calendar_handler))
         application.add_handler(CommandHandler("h", self.hours_handler))
         application.add_handler(CommandHandler("pref", self.preference_handler))
+        application.add_handler(CommandHandler("cancel", self.cancel_handler))
         application.add_handler(CommandHandler("confirm", self.confirm_handler))
         application.add_handler(CommandHandler("reject", self.reject_handler))
         application.add_handler(CallbackQueryHandler(self.approval_callback_handler, pattern=r"^(approve|reject):"))
@@ -152,18 +165,34 @@ class PersonalAssistantBot:
         chat_id, user_id = self._chat_and_user(update)
         if not context.args:
             await update.effective_message.reply_text(
-                "Use /rem add YYYY-MM-DD HH:MM | text, /rem list, /rem done <id>, or /rem cancel <id>."
+                "Use /rem add to start an interactive reminder, or /rem add YYYY-MM-DD HH:MM | text as a shortcut. /rem list, /rem done <id>, and /rem cancel <id> still work."
             )
             return
         subcommand = context.args[0].lower()
         rest = " ".join(context.args[1:])
         try:
             if subcommand == "add":
-                parts = self._split_pipe(rest, minimum=2)
-                reminder_id = self.assistant.create_reminder(
-                    chat_id=chat_id, user_id=user_id, due_text=parts[0], message=parts[1]
+                if "|" in rest:
+                    parts = self._split_pipe(rest, minimum=2)
+                    approval = self.assistant.create_pending_approval(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        action_type="create_reminder",
+                        payload={"when_local": parts[0], "message": parts[1]},
+                        prompt_text="",
+                    )
+                    await update.effective_message.reply_text(
+                        self._approval_message(approval), reply_markup=self._build_approval_keyboard(approval)
+                    )
+                    return
+
+                prompt = self._start_reminder_draft(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    message=rest.strip() or None,
+                    source="command",
                 )
-                await update.effective_message.reply_text(f"Created reminder #{reminder_id}")
+                await update.effective_message.reply_text(prompt)
                 return
             if subcommand == "list":
                 reminders = self.assistant.list_reminders(chat_id=chat_id, user_id=user_id, pending_only=False)
@@ -187,7 +216,7 @@ class PersonalAssistantBot:
         chat_id, user_id = self._chat_and_user(update)
         if not context.args:
             await update.effective_message.reply_text(
-                "Use /cal list [days] or /cal add YYYY-MM-DD HH:MM | YYYY-MM-DD HH:MM | title [| description]."
+                "Use /cal today, /cal tomorrow, /cal next7, /cal list [days], or /cal add to start an interactive event. Shortcut: /cal add YYYY-MM-DD HH:MM | YYYY-MM-DD HH:MM | title [| description]."
             )
             return
         subcommand = context.args[0].lower()
@@ -195,50 +224,55 @@ class PersonalAssistantBot:
             if subcommand == "list":
                 days = int(context.args[1]) if len(context.args) > 1 and context.args[1].isdigit() else 7
                 events = self.assistant.list_calendar_events(chat_id=chat_id, user_id=user_id, days=days)
-                if not events:
-                    await update.effective_message.reply_text("No upcoming events found.")
-                    return
-                preferences = self.assistant.ensure_chat(chat_id=chat_id, user_id=user_id)
-                lines = ["Upcoming events:"]
-                for event in events[:10]:
-                    all_day = getattr(event, "all_day", False)
-                    if all_day:
-                        if getattr(event, "start_date", None) is not None:
-                            label = event.start_date.isoformat()
-                        else:
-                            start_value = event.start
-                            if start_value.tzinfo is None:
-                                start_value = start_value.replace(tzinfo=ZoneInfo(preferences.timezone))
-                            label = start_value.astimezone(ZoneInfo(preferences.timezone)).strftime('%Y-%m-%d')
-                        lines.append(f"- {label} — {event.summary} (all day)")
-                    else:
-                        start_local = event.start
-                        end_local = event.end
-                        if start_local.tzinfo is None:
-                            start_local = start_local.replace(tzinfo=ZoneInfo(preferences.timezone))
-                        if end_local.tzinfo is None:
-                            end_local = end_local.replace(tzinfo=ZoneInfo(preferences.timezone))
-                        start_local = start_local.astimezone(ZoneInfo(preferences.timezone))
-                        end_local = end_local.astimezone(ZoneInfo(preferences.timezone))
-                        lines.append(
-                            f"- {start_local.strftime('%Y-%m-%d %H:%M')} to {end_local.strftime('%H:%M')} — {event.summary}"
-                        )
-                await update.effective_message.reply_text("\n".join(lines))
+                await update.effective_message.reply_text(
+                    self._format_calendar_events(events, chat_id=chat_id, user_id=user_id, title="Upcoming events")
+                )
                 return
-            if subcommand == "add":
-                parts = self._split_pipe(" ".join(context.args[1:]), minimum=3)
-                description = parts[3] if len(parts) > 3 else None
-                event = self.assistant.create_calendar_event(
+            if subcommand in {"today", "tomorrow", "next7", "nextweek"}:
+                title, start_local, end_local = self._calendar_window(
                     chat_id=chat_id,
                     user_id=user_id,
-                    start_text=parts[0],
-                    end_text=parts[1],
-                    summary=parts[2],
-                    description=description,
+                    window=subcommand,
+                )
+                events = self.assistant.list_calendar_events_between(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    start_local=start_local,
+                    end_local=end_local,
                 )
                 await update.effective_message.reply_text(
-                    f"Created calendar event: {event.summary} ({event.start.strftime('%Y-%m-%d %H:%M')})"
+                    self._format_calendar_events(events, chat_id=chat_id, user_id=user_id, title=title)
                 )
+                return
+            if subcommand == "add":
+                rest = " ".join(context.args[1:])
+                if "|" in rest:
+                    parts = self._split_pipe(rest, minimum=3)
+                    description = parts[3] if len(parts) > 3 else None
+                    approval = self.assistant.create_pending_approval(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        action_type="create_calendar_event",
+                        payload={
+                            "start_local": parts[0],
+                            "end_local": parts[1],
+                            "summary": parts[2],
+                            "description": description,
+                        },
+                        prompt_text="",
+                    )
+                    await update.effective_message.reply_text(
+                        self._approval_message(approval), reply_markup=self._build_approval_keyboard(approval)
+                    )
+                    return
+
+                prompt = self._start_calendar_draft(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    title=rest.strip() or None,
+                    source="command",
+                )
+                await update.effective_message.reply_text(prompt)
                 return
             raise AssistantError("Unknown /cal subcommand")
         except (AssistantError, ValueError) as exc:
@@ -323,6 +357,18 @@ class PersonalAssistantBot:
             raise AssistantError("Unknown /pref subcommand")
         except (AssistantError, ValueError) as exc:
             await update.effective_message.reply_text(str(exc))
+
+    async def cancel_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._ensure_access(update):
+            return
+        chat_id, user_id = self._chat_and_user(update)
+        draft = self._pop_draft(chat_id=chat_id, user_id=user_id)
+        if draft is None:
+            await update.effective_message.reply_text("No interactive reminder or calendar flow is active.")
+            return
+        label = "reminder" if draft.flow_type == "reminder_create" else "calendar event"
+        await update.effective_message.reply_text(f"Cancelled the current {label} flow.")
 
     async def confirm_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._ensure_access(update):
@@ -469,6 +515,18 @@ class PersonalAssistantBot:
         user_message: str,
         transcript_feedback: str | None = None,
     ) -> None:
+
+        draft = self._get_active_draft(chat_id=chat_id, user_id=user_id)
+        if draft is not None:
+            await self._continue_draft(
+                message=message,
+                chat_id=chat_id,
+                user_id=user_id,
+                draft=draft,
+                user_message=user_message,
+            )
+            return
+
         if not self.ai_client.configured:
             unavailable_text = "AI chat is not configured yet. Deterministic commands still work."
             await message.reply_text(self._prepend_transcript_feedback(unavailable_text, transcript_feedback))
@@ -489,20 +547,44 @@ class PersonalAssistantBot:
 
         reply_text = ai_result.reply
         reply_markup = None
+        approval: PendingApproval | None = None
+
         if ai_result.proposed_action:
-            approval = self.assistant.create_pending_approval(
-                chat_id=chat_id,
-                user_id=user_id,
-                action_type=str(ai_result.proposed_action["action_type"]),
-                payload=dict(ai_result.proposed_action.get("payload") or {}),
-                prompt_text=str(ai_result.proposed_action.get("label") or ai_result.reply),
-            )
-            reply_text = (
-                f"{ai_result.reply}\n\n"
-                f"Proposed action: {approval.prompt_text}\n"
-                f"Use the buttons below, or fallback to /confirm {approval.token} / /reject {approval.token}."
-            )
+            try:
+                approval = self.assistant.create_pending_approval(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    action_type=str(ai_result.proposed_action["action_type"]),
+                    payload=dict(ai_result.proposed_action.get("payload") or {}),
+                    prompt_text=str(ai_result.proposed_action.get("label") or ""),
+                )
+            except AssistantError as exc:
+                logger.warning("Rejected AI proposal for chat %s: %s", chat_id, exc)
+                ai_result = AIResponse(reply=ai_result.reply, proposal_error=f"invalid_payload:{exc}")
+
+        if approval is None and self._is_affirmative_message(user_message):
+            approval = self._recover_approval_from_history(chat_id=chat_id, user_id=user_id, history=history)
+
+        if approval is not None:
+            reply_text = self._approval_message(approval)
             reply_markup = self._build_approval_keyboard(approval)
+        else:
+            fallback_kind = self._infer_write_intent(user_message=user_message, history=history)
+            should_start_fallback = fallback_kind is not None and (
+                ai_result.proposal_error is not None or not ai_result.reply.strip().endswith("?")
+            )
+            if should_start_fallback:
+                logger.warning(
+                    "AI failed to prepare proposal for %s intent in chat %s: %s",
+                    fallback_kind,
+                    chat_id,
+                    ai_result.proposal_error,
+                )
+                reply_text = self._start_fallback_draft(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    flow_type=fallback_kind,
+                )
 
         self.assistant.add_chat_history(chat_id=chat_id, user_id=user_id, role="assistant", content=reply_text)
         await message.reply_text(
@@ -592,6 +674,325 @@ class PersonalAssistantBot:
             raise AssistantError("Please separate arguments with '|' characters")
         return parts
 
+    def _draft_expiry(self) -> datetime:
+        return datetime.now(timezone.utc) + timedelta(minutes=self.settings.approval_ttl_minutes)
+
+    def _draft_key(self, *, chat_id: int, user_id: int) -> tuple[int, int]:
+        return chat_id, user_id
+
+    def _get_active_draft(self, *, chat_id: int, user_id: int) -> DraftState | None:
+        key = self._draft_key(chat_id=chat_id, user_id=user_id)
+        draft = self._drafts.get(key)
+        if draft is None:
+            return None
+        if draft.expires_at < datetime.now(timezone.utc):
+            self._drafts.pop(key, None)
+            return None
+        return draft
+
+    def _pop_draft(self, *, chat_id: int, user_id: int) -> DraftState | None:
+        return self._drafts.pop(self._draft_key(chat_id=chat_id, user_id=user_id), None)
+
+    def _start_reminder_draft(self, *, chat_id: int, user_id: int, message: str | None, source: str) -> str:
+        if message:
+            self._drafts[self._draft_key(chat_id=chat_id, user_id=user_id)] = DraftState(
+                flow_type="reminder_create",
+                step="when_local",
+                payload={"message": message.strip()},
+                source=source,
+                expires_at=self._draft_expiry(),
+            )
+            return (
+                f"Reminder text: {message.strip()}\n"
+                "When should I remind you? Reply with something like 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'. Use /cancel to stop."
+            )
+
+        self._drafts[self._draft_key(chat_id=chat_id, user_id=user_id)] = DraftState(
+            flow_type="reminder_create",
+            step="message",
+            payload={},
+            source=source,
+            expires_at=self._draft_expiry(),
+        )
+        return "What should I remind you about? Use /cancel to stop."
+
+    def _start_calendar_draft(self, *, chat_id: int, user_id: int, title: str | None, source: str) -> str:
+        if title:
+            self._drafts[self._draft_key(chat_id=chat_id, user_id=user_id)] = DraftState(
+                flow_type="calendar_create",
+                step="start_local",
+                payload={"summary": title.strip()},
+                source=source,
+                expires_at=self._draft_expiry(),
+            )
+            return (
+                f"Event title: {title.strip()}\n"
+                "When does it start? Reply with something like 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'. Use /cancel to stop."
+            )
+
+        self._drafts[self._draft_key(chat_id=chat_id, user_id=user_id)] = DraftState(
+            flow_type="calendar_create",
+            step="summary",
+            payload={},
+            source=source,
+            expires_at=self._draft_expiry(),
+        )
+        return "What is the event title? Use /cancel to stop."
+
+    def _start_fallback_draft(self, *, chat_id: int, user_id: int, flow_type: str) -> str:
+        if flow_type == "reminder_create":
+            prompt = self._start_reminder_draft(chat_id=chat_id, user_id=user_id, message=None, source="ai")
+            return (
+                "I understood this as a reminder request, but I couldn't prepare the confirmation yet. "
+                "Let's do it step by step.\n\n"
+                f"{prompt}"
+            )
+        prompt = self._start_calendar_draft(chat_id=chat_id, user_id=user_id, title=None, source="ai")
+        return (
+            "I understood this as a calendar event request, but I couldn't prepare the confirmation yet. "
+            "Let's do it step by step.\n\n"
+            f"{prompt}"
+        )
+
+    async def _continue_draft(
+        self,
+        *,
+        message,
+        chat_id: int,
+        user_id: int,
+        draft: DraftState,
+        user_message: str,
+    ) -> None:
+        if message is None:
+            return
+
+        draft.expires_at = self._draft_expiry()
+        try:
+            if draft.flow_type == "reminder_create":
+                if draft.step == "message":
+                    draft.payload["message"] = user_message.strip()
+                    draft.step = "when_local"
+                    await message.reply_text(
+                        "When should I remind you? Reply with something like 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'. Use /cancel to stop."
+                    )
+                    return
+
+                if draft.step == "when_local":
+                    when_local = self.assistant.parse_flexible_local_datetime(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        raw_text=user_message,
+                    ).strftime("%Y-%m-%d %H:%M")
+                    approval = self.assistant.create_pending_approval(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        action_type="create_reminder",
+                        payload={"when_local": when_local, "message": draft.payload["message"]},
+                        prompt_text="",
+                    )
+                    self._pop_draft(chat_id=chat_id, user_id=user_id)
+                    await message.reply_text(
+                        self._approval_message(approval), reply_markup=self._build_approval_keyboard(approval)
+                    )
+                    return
+
+            if draft.flow_type == "calendar_create":
+                if draft.step == "summary":
+                    draft.payload["summary"] = user_message.strip()
+                    draft.step = "start_local"
+                    await message.reply_text(
+                        "When does it start? Reply with something like 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'. Use /cancel to stop."
+                    )
+                    return
+
+                if draft.step == "start_local":
+                    start_local = self.assistant.parse_flexible_local_datetime(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        raw_text=user_message,
+                    )
+                    draft.payload["start_local"] = start_local.strftime("%Y-%m-%d %H:%M")
+                    draft.step = "end_local"
+                    await message.reply_text(
+                        "When does it end? Reply with HH:MM or YYYY-MM-DD HH:MM. Use /cancel to stop."
+                    )
+                    return
+
+                if draft.step == "end_local":
+                    start_local = self.assistant.parse_local_datetime(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        raw_text=draft.payload["start_local"],
+                    )
+                    end_local = self.assistant.parse_time_or_local_datetime(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        raw_text=user_message,
+                        anchor_local=start_local,
+                    ).strftime("%Y-%m-%d %H:%M")
+                    approval = self.assistant.create_pending_approval(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        action_type="create_calendar_event",
+                        payload={
+                            "summary": draft.payload["summary"],
+                            "start_local": draft.payload["start_local"],
+                            "end_local": end_local,
+                        },
+                        prompt_text="",
+                    )
+                    self._pop_draft(chat_id=chat_id, user_id=user_id)
+                    await message.reply_text(
+                        self._approval_message(approval), reply_markup=self._build_approval_keyboard(approval)
+                    )
+                    return
+        except AssistantError as exc:
+            await message.reply_text(str(exc))
+            return
+
+        self._pop_draft(chat_id=chat_id, user_id=user_id)
+        await message.reply_text("The interactive flow expired or became invalid. Please start again.")
+
+    def _approval_message(self, approval: PendingApproval) -> str:
+        return (
+            "Please confirm this action.\n\n"
+            f"Proposed action: {approval.prompt_text}\n"
+            f"Use the buttons below, or fallback to /confirm {approval.token} / /reject {approval.token}."
+        )
+
+    def _calendar_window(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        window: str,
+    ) -> tuple[str, datetime, datetime]:
+        preferences = self.assistant.ensure_chat(chat_id=chat_id, user_id=user_id)
+        timezone_info = ZoneInfo(preferences.timezone)
+        local_now = datetime.now(timezone.utc).astimezone(timezone_info)
+        today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        if window == "today":
+            return "Today's events", local_now, today_start + timedelta(days=1)
+        if window == "tomorrow":
+            start_local = today_start + timedelta(days=1)
+            return "Tomorrow", start_local, start_local + timedelta(days=1)
+        return "Next 7 days", local_now, local_now + timedelta(days=7)
+
+    def _format_calendar_events(
+        self,
+        events: Iterable[object],
+        *,
+        chat_id: int,
+        user_id: int,
+        title: str,
+    ) -> str:
+        events = list(events)
+        if not events:
+            if title == "Upcoming events":
+                return "No upcoming events found."
+            return f"No events found for {title.lower()}."
+
+        preferences = self.assistant.ensure_chat(chat_id=chat_id, user_id=user_id)
+        timezone_info = ZoneInfo(preferences.timezone)
+        lines = [f"{title}:"]
+        current_day: str | None = None
+
+        for event in events[:12]:
+            if getattr(event, "all_day", False):
+                if getattr(event, "start_date", None) is not None:
+                    day_label = event.start_date.strftime("%A %Y-%m-%d")
+                else:
+                    start_value = event.start
+                    if start_value.tzinfo is None:
+                        start_value = start_value.replace(tzinfo=timezone_info)
+                    day_label = start_value.astimezone(timezone_info).strftime("%A %Y-%m-%d")
+                detail = f"{event.summary} (all day)"
+            else:
+                start_local = event.start
+                end_local = event.end
+                if start_local.tzinfo is None:
+                    start_local = start_local.replace(tzinfo=timezone_info)
+                if end_local.tzinfo is None:
+                    end_local = end_local.replace(tzinfo=timezone_info)
+                start_local = start_local.astimezone(timezone_info)
+                end_local = end_local.astimezone(timezone_info)
+                day_label = start_local.strftime("%A %Y-%m-%d")
+                detail = f"{start_local.strftime('%H:%M')}–{end_local.strftime('%H:%M')} — {event.summary}"
+
+            if day_label != current_day:
+                if current_day is not None:
+                    lines.append("")
+                lines.append(day_label)
+                current_day = day_label
+            lines.append(f"- {detail}")
+
+        return "\n".join(lines)
+
+    def _is_affirmative_message(self, user_message: str) -> bool:
+        normalized = re.sub(r"[^a-z ]+", " ", user_message.lower()).strip()
+        normalized = " ".join(normalized.split())
+        if normalized in {"yes", "yes please", "yeah", "yep", "sure", "okay", "ok", "do it", "go ahead"}:
+            return True
+        return normalized.startswith("yes ") or normalized.startswith("yeah ") or normalized.startswith("sure ")
+
+    def _infer_write_intent(self, *, user_message: str, history: list[object]) -> str | None:
+        lower = user_message.lower()
+        if "remind me" in lower or "reminder" in lower:
+            return "reminder_create"
+        if (
+            any(keyword in lower for keyword in ("calendar", "event", "appointment"))
+            and any(keyword in lower for keyword in ("add", "create", "set", "schedule", "put"))
+        ):
+            return "calendar_create"
+
+        if self._is_affirmative_message(user_message):
+            for item in reversed(history[:-1]):
+                if getattr(item, "role", None) != "assistant":
+                    continue
+                content = str(getattr(item, "content", "")).lower()
+                if "reminder" in content:
+                    return "reminder_create"
+                if "calendar" in content or "event" in content:
+                    return "calendar_create"
+        return None
+
+    def _recover_approval_from_history(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        history: list[object],
+    ) -> PendingApproval | None:
+        for item in reversed(history[:-1]):
+            if getattr(item, "role", None) != "assistant":
+                continue
+            content = str(getattr(item, "content", ""))
+            if content.startswith("Please confirm this action."):
+                continue
+            reminder_match = re.search(
+                r'reminder[^\n]*"(?P<message>[^"]+)"[^\d]*(?P<when>\d{4}-\d{2}-\d{2} \d{2}:\d{2})',
+                content,
+                flags=re.IGNORECASE,
+            )
+            if reminder_match is None:
+                continue
+            try:
+                return self.assistant.create_pending_approval(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    action_type="create_reminder",
+                    payload={
+                        "message": reminder_match.group("message").strip(),
+                        "when_local": reminder_match.group("when"),
+                    },
+                    prompt_text="",
+                )
+            except AssistantError as exc:
+                logger.warning("Could not recover reminder approval from history in chat %s: %s", chat_id, exc)
+                return None
+        return None
+
     def _help_text(self) -> str:
         return (
             "Personal assistant commands:\n\n"
@@ -605,13 +1006,19 @@ class PersonalAssistantBot:
             "/note inbox Something to remember\n"
             "/note list\n"
             "/note search passport\n"
+            "/rem add\n"
             "/rem add 2026-04-01 09:00 | Call the bank\n"
             "/rem list\n"
+            "/cal today\n"
+            "/cal tomorrow\n"
+            "/cal next7\n"
             "/cal list 7\n"
+            "/cal add\n"
             "/cal add 2026-04-01 14:00 | 2026-04-01 15:00 | Dentist\n"
             "/h add 2h 30m\n"
             "/h month 04\n"
             "/pref show\n"
+            "/cancel\n"
             "AI approval buttons are shown automatically; /confirm TOKEN and /reject TOKEN remain as fallback.\n\n"
             "You can also send a Telegram voice note and, if local speech-to-text is enabled, the assistant will transcribe it and process it like a normal message.\n\n"
             "If you send a normal message, the assistant uses AI chat mode, can inspect your assistant data, and asks before writing changes."

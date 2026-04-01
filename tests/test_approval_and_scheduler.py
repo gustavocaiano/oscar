@@ -14,13 +14,15 @@ from personal_assistant_bot.storage import SQLiteStorage
 @dataclass
 class FakeCalendarService:
     configured: bool = False
+    create_calls: list[tuple[datetime, datetime, str, str | None]] | None = None
 
     def list_events(self, *, start, end):
         del start, end
         return []
 
     def create_event(self, *, start, end, summary, description=None):
-        del description
+        if self.create_calls is not None:
+            self.create_calls.append((start, end, summary, description))
         return type("Event", (), {"summary": summary, "start": start, "end": end, "uid": "evt-1"})
 
 
@@ -93,19 +95,42 @@ def test_scheduler_generates_notifications_and_marks_state(tmp_path: Path) -> No
     assert reminders[0].status == "sent"
 
 
-def test_malformed_approval_payload_does_not_leave_token_stuck(tmp_path: Path) -> None:
+def test_malformed_approval_payload_is_rejected_before_storage(tmp_path: Path) -> None:
     service = build_service(tmp_path)
+    with pytest.raises(AssistantError):
+        service.create_pending_approval(
+            chat_id=1,
+            user_id=2,
+            action_type="create_task",
+            payload={},
+            prompt_text="Broken task action",
+        )
+
+
+def test_confirm_approval_supports_create_calendar_event(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    storage = SQLiteStorage(settings.database_path)
+    calendar = FakeCalendarService(configured=True, create_calls=[])
+    service = AssistantService(storage=storage, calendar=calendar, settings=settings)
+
     pending = service.create_pending_approval(
-        chat_id=1,
-        user_id=2,
-        action_type="create_task",
-        payload={},
-        prompt_text="Broken task action",
+        chat_id=10,
+        user_id=20,
+        action_type="create_calendar_event",
+        payload={
+            "summary": "Team sync",
+            "start_local": "2026-04-02 10:00",
+            "end_local": "2026-04-02 10:30",
+            "description": "Weekly check-in",
+        },
+        prompt_text="",
     )
 
-    with pytest.raises(AssistantError):
-        service.confirm_approval(chat_id=1, user_id=2, token=pending.token)
+    result = service.confirm_approval(chat_id=10, user_id=20, token=pending.token)
 
-    approval = service.storage.get_approval(token=pending.token, user_id=2, chat_id=1)
-    assert approval is not None
-    assert approval.status == "pending"
+    assert result == "Created calendar event: Team sync"
+    assert calendar.create_calls is not None
+    assert len(calendar.create_calls) == 1
+    _, _, summary, description = calendar.create_calls[0]
+    assert summary == "Team sync"
+    assert description == "Weekly check-in"

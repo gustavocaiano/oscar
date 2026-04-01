@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
@@ -40,6 +41,13 @@ class PendingApproval:
     expires_at: str
 
 
+@dataclass(frozen=True)
+class PreparedAction:
+    action_type: str
+    payload: dict[str, Any]
+    prompt_text: str
+
+
 class AssistantService:
     def __init__(self, *, storage: SQLiteStorage, calendar: CalendarService, settings: Settings):
         self.storage = storage
@@ -70,6 +78,89 @@ class AssistantService:
         except ValueError as exc:
             raise AssistantError("Use datetime format YYYY-MM-DD HH:MM") from exc
         return naive.replace(tzinfo=ZoneInfo(preferences.timezone))
+
+    def parse_flexible_local_datetime(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        raw_text: str,
+        reference_local: datetime | None = None,
+    ) -> datetime:
+        stripped = " ".join(raw_text.strip().split())
+        if not stripped:
+            raise AssistantError("Please provide a date and time")
+
+        try:
+            return self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=stripped)
+        except AssistantError:
+            pass
+
+        preferences = self._preferences(chat_id=chat_id, user_id=user_id)
+        timezone_info = ZoneInfo(preferences.timezone)
+        reference = reference_local.astimezone(timezone_info) if reference_local else self._local_now(preferences)
+        lower = stripped.lower()
+
+        relative_match = re.fullmatch(r"(today|tomorrow)(?:\s+at)?\s+([01]?\d|2[0-3])(?::([0-5]\d))?", lower)
+        if relative_match is not None:
+            day_offset = 0 if relative_match.group(1) == "today" else 1
+            hour = int(relative_match.group(2))
+            minute = int(relative_match.group(3) or "0")
+            target_date = reference.date() + timedelta(days=day_offset)
+            return datetime(
+                target_date.year,
+                target_date.month,
+                target_date.day,
+                hour,
+                minute,
+                tzinfo=timezone_info,
+            )
+
+        dated_match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})(?:\s+at)?\s+([01]?\d|2[0-3])(?::([0-5]\d))?", lower)
+        if dated_match is not None:
+            try:
+                target_date = datetime.strptime(dated_match.group(1), "%Y-%m-%d").date()
+            except ValueError as exc:
+                raise AssistantError("Use date format YYYY-MM-DD") from exc
+            hour = int(dated_match.group(2))
+            minute = int(dated_match.group(3) or "0")
+            return datetime(
+                target_date.year,
+                target_date.month,
+                target_date.day,
+                hour,
+                minute,
+                tzinfo=timezone_info,
+            )
+
+        raise AssistantError("Use 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'")
+
+    def parse_time_or_local_datetime(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        raw_text: str,
+        anchor_local: datetime,
+    ) -> datetime:
+        stripped = " ".join(raw_text.strip().split())
+        if not stripped:
+            raise AssistantError("Please provide an end time")
+
+        time_only_match = re.fullmatch(r"([01]?\d|2[0-3])(?::([0-5]\d))?", stripped)
+        if time_only_match is not None:
+            candidate = anchor_local.replace(
+                hour=int(time_only_match.group(1)),
+                minute=int(time_only_match.group(2) or "0"),
+                second=0,
+                microsecond=0,
+            )
+        else:
+            candidate = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=stripped)
+
+        if candidate <= anchor_local:
+            raise AssistantError("End time must be after the start time")
+        return candidate
 
     def create_items(self, *, chat_id: int, user_id: int, kind: str, titles: list[str]) -> list[int]:
         self.ensure_chat(chat_id=chat_id, user_id=user_id)
@@ -166,12 +257,28 @@ class AssistantService:
 
     def list_calendar_events(self, *, chat_id: int, user_id: int, days: int = 7) -> list[CalendarEvent]:
         preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
-        if not self.calendar.configured:
-            raise AssistantError("Calendar integration is not configured")
         local_now = self._local_now(preferences)
         local_end = local_now + timedelta(days=max(1, days))
+        return self.list_calendar_events_between(
+            chat_id=chat_id,
+            user_id=user_id,
+            start_local=local_now,
+            end_local=local_end,
+        )
+
+    def list_calendar_events_between(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        start_local: datetime,
+        end_local: datetime,
+    ) -> list[CalendarEvent]:
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        if not self.calendar.configured:
+            raise AssistantError("Calendar integration is not configured")
         try:
-            return self.calendar.list_events(start=local_now, end=local_end)
+            return self.calendar.list_events(start=start_local, end=end_local)
         except CalendarIntegrationError as exc:
             raise AssistantError(str(exc)) from exc
 
@@ -188,6 +295,8 @@ class AssistantService:
         self.ensure_chat(chat_id=chat_id, user_id=user_id)
         if not self.calendar.configured:
             raise AssistantError("Calendar integration is not configured")
+        if not summary.strip():
+            raise AssistantError("Please provide a calendar event title")
         start = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=start_text)
         end = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=end_text)
         if end <= start:
@@ -264,42 +373,43 @@ class AssistantService:
         payload: dict[str, Any],
         prompt_text: str,
     ) -> PendingApproval:
+        prepared = self._prepare_action(
+            chat_id=chat_id,
+            user_id=user_id,
+            action_type=action_type,
+            payload=payload,
+            prompt_text=prompt_text,
+        )
         token = secrets.token_hex(3)
         expires_at = (datetime.now(timezone.utc) + timedelta(minutes=self.settings.approval_ttl_minutes)).isoformat()
         self.storage.create_approval(
             token=token,
             user_id=user_id,
             chat_id=chat_id,
-            action_type=action_type,
-            payload=payload,
-            prompt_text=prompt_text,
+            action_type=prepared.action_type,
+            payload=prepared.payload,
+            prompt_text=prepared.prompt_text,
             expires_at=expires_at,
         )
-        return PendingApproval(token=token, prompt_text=prompt_text, expires_at=expires_at)
+        return PendingApproval(token=token, prompt_text=prepared.prompt_text, expires_at=expires_at)
 
     def _execute_action(self, *, chat_id: int, user_id: int, action_type: str, payload: dict[str, Any]) -> str:
+        payload = self._validate_action_payload(
+            chat_id=chat_id,
+            user_id=user_id,
+            action_type=action_type,
+            payload=payload,
+        )
         if action_type == "create_task":
             title = str(payload.get("title", "")).strip()
-            if not title:
-                raise AssistantError("Pending action is missing a task title")
             item_ids = self.create_items(chat_id=chat_id, user_id=user_id, kind="task", titles=[title])
             return f"Created task #{item_ids[0]}"
         if action_type == "add_shopping_items":
-            raw_items = payload.get("items")
-            if isinstance(raw_items, str):
-                items = [raw_items]
-            elif isinstance(raw_items, list):
-                items = [str(item).strip() for item in raw_items if str(item).strip()]
-            else:
-                items = []
-            if not items:
-                raise AssistantError("Pending action is missing shopping items")
+            items = [str(item).strip() for item in payload.get("items", []) if str(item).strip()]
             item_ids = self.create_items(chat_id=chat_id, user_id=user_id, kind="shopping", titles=items)
             return f"Added {len(item_ids)} shopping item(s)"
         if action_type == "create_note":
             content = str(payload.get("content", "")).strip()
-            if not content:
-                raise AssistantError("Pending action is missing note content")
             note_id = self.add_note(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -310,8 +420,6 @@ class AssistantService:
         if action_type == "create_reminder":
             when_local = str(payload.get("when_local", "")).strip()
             message = str(payload.get("message", "")).strip()
-            if not when_local or not message:
-                raise AssistantError("Pending reminder action is missing its time or message")
             reminder_id = self.create_reminder(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -319,6 +427,20 @@ class AssistantService:
                 message=message,
             )
             return f"Created reminder #{reminder_id}"
+        if action_type == "create_calendar_event":
+            event = self.create_calendar_event(
+                chat_id=chat_id,
+                user_id=user_id,
+                start_text=str(payload.get("start_local", "")).strip(),
+                end_text=str(payload.get("end_local", "")).strip(),
+                summary=str(payload.get("summary", "")).strip(),
+                description=(
+                    str(payload.get("description")).strip()
+                    if payload.get("description") is not None and str(payload.get("description")).strip()
+                    else None
+                ),
+            )
+            return f"Created calendar event: {event.summary}"
         raise AssistantError(f"Unsupported approval action: {action_type}")
 
     def confirm_approval(self, *, chat_id: int, user_id: int, token: str) -> str:
@@ -611,3 +733,136 @@ class AssistantService:
         if all_day:
             return local_value.strftime("%Y-%m-%d")
         return local_value.strftime("%Y-%m-%d %H:%M")
+
+    def _prepare_action(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        action_type: str,
+        payload: dict[str, Any],
+        prompt_text: str,
+    ) -> PreparedAction:
+        preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        normalized_payload = self._validate_action_payload(
+            chat_id=chat_id,
+            user_id=user_id,
+            action_type=action_type,
+            payload=payload,
+        )
+        normalized_prompt = self._build_action_prompt(
+            action_type=action_type,
+            payload=normalized_payload,
+            preferences=preferences,
+            prompt_text=prompt_text,
+        )
+        return PreparedAction(
+            action_type=action_type,
+            payload=normalized_payload,
+            prompt_text=normalized_prompt,
+        )
+
+    def _validate_action_payload(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        action_type: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if action_type == "create_task":
+            title = str(payload.get("title", "")).strip()
+            if not title:
+                raise AssistantError("Pending action is missing a task title")
+            return {"title": title}
+
+        if action_type == "add_shopping_items":
+            raw_items = payload.get("items")
+            if isinstance(raw_items, str):
+                items = [raw_items]
+            elif isinstance(raw_items, list):
+                items = [str(item).strip() for item in raw_items if str(item).strip()]
+            else:
+                items = []
+            if not items:
+                raise AssistantError("Pending action is missing shopping items")
+            return {"items": items}
+
+        if action_type == "create_note":
+            content = str(payload.get("content", "")).strip()
+            if not content:
+                raise AssistantError("Pending action is missing note content")
+            kind = str(payload.get("kind", "note")).strip() or "note"
+            if kind not in {"note", "inbox"}:
+                raise AssistantError("Pending note action has an invalid kind")
+            return {"kind": kind, "content": content}
+
+        if action_type == "create_reminder":
+            when_local = str(payload.get("when_local", "")).strip()
+            message = str(payload.get("message", "")).strip()
+            if not when_local or not message:
+                raise AssistantError("Pending reminder action is missing its time or message")
+            due_local = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=when_local)
+            return {
+                "when_local": due_local.strftime("%Y-%m-%d %H:%M"),
+                "message": message,
+            }
+
+        if action_type == "create_calendar_event":
+            if not self.calendar.configured:
+                raise AssistantError("Calendar integration is not configured")
+            summary = str(payload.get("summary") or payload.get("title") or "").strip()
+            start_text = str(payload.get("start_local", "")).strip()
+            end_text = str(payload.get("end_local", "")).strip()
+            if not summary or not start_text or not end_text:
+                raise AssistantError("Pending calendar action is missing its title, start time, or end time")
+            start_local = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=start_text)
+            end_local = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=end_text)
+            if end_local <= start_local:
+                raise AssistantError("Calendar event end time must be after the start time")
+            raw_description = payload.get("description")
+            description = str(raw_description).strip() if raw_description is not None else None
+            if description == "":
+                description = None
+            return {
+                "summary": summary,
+                "start_local": start_local.strftime("%Y-%m-%d %H:%M"),
+                "end_local": end_local.strftime("%Y-%m-%d %H:%M"),
+                "description": description,
+            }
+
+        raise AssistantError(f"Unsupported approval action: {action_type}")
+
+    def _build_action_prompt(
+        self,
+        *,
+        action_type: str,
+        payload: dict[str, Any],
+        preferences: ChatPreferences,
+        prompt_text: str,
+    ) -> str:
+        custom_prompt = prompt_text.strip()
+        if action_type in {"create_reminder", "create_calendar_event"}:
+            custom_prompt = ""
+        if custom_prompt:
+            return custom_prompt
+
+        if action_type == "create_task":
+            return f"Create task: {payload['title']}"
+        if action_type == "add_shopping_items":
+            return f"Add shopping items: {', '.join(payload['items'])}"
+        if action_type == "create_note":
+            return f"Save {payload['kind']}: {payload['content']}"
+        if action_type == "create_reminder":
+            return (
+                f"Create reminder: \"{payload['message']}\" @ {payload['when_local']} "
+                f"({preferences.timezone})"
+            )
+        if action_type == "create_calendar_event":
+            start_label = payload["start_local"]
+            end_label = payload["end_local"]
+            return (
+                f"Create calendar event: \"{payload['summary']}\" @ {start_label} to {end_label} "
+                f"({preferences.timezone})"
+            )
+        return custom_prompt or action_type

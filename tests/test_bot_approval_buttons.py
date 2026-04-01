@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from personal_assistant_bot.ai import AIResponse
@@ -87,6 +88,16 @@ class FakeBot:
 @dataclass
 class FakeContext:
     bot: FakeBot
+    args: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.args is None:
+            self.args = []
+
+
+@dataclass
+class FakePreferences:
+    timezone: str = "UTC"
 
 
 class FakeAssistant:
@@ -94,9 +105,12 @@ class FakeAssistant:
         self.chat_history: list[tuple[int, int, str, str]] = []
         self.confirm_calls: list[tuple[int, int, str]] = []
         self.reject_calls: list[tuple[int, int, str]] = []
+        self.pending_calls: list[dict[str, object]] = []
+        self.between_calls: list[tuple[datetime, datetime]] = []
 
     def ensure_chat(self, *, chat_id: int, user_id: int):
-        return None
+        del chat_id, user_id
+        return FakePreferences()
 
     def add_chat_history(self, *, chat_id: int, user_id: int, role: str, content: str) -> None:
         self.chat_history.append((chat_id, user_id, role, content))
@@ -108,7 +122,30 @@ class FakeAssistant:
         return {"tasks": [], "shopping": []}
 
     def create_pending_approval(self, *, chat_id: int, user_id: int, action_type: str, payload: dict, prompt_text: str):
-        return PendingApproval(token="abc123", prompt_text=prompt_text, expires_at="2026-04-01T12:00:00+00:00")
+        del chat_id, user_id
+        self.pending_calls.append({"action_type": action_type, "payload": payload, "prompt_text": prompt_text})
+        return PendingApproval(token="abc123", prompt_text=prompt_text or "Auto prompt", expires_at="2026-04-01T12:00:00+00:00")
+
+    def parse_flexible_local_datetime(self, *, chat_id: int, user_id: int, raw_text: str):
+        del chat_id, user_id
+        if raw_text == "tomorrow 09:30":
+            return datetime(2026, 4, 2, 9, 30, tzinfo=timezone.utc)
+        return datetime.strptime(raw_text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+
+    def list_calendar_events_between(self, *, chat_id: int, user_id: int, start_local: datetime, end_local: datetime):
+        del chat_id, user_id
+        self.between_calls.append((start_local, end_local))
+        return [
+            type(
+                "Event",
+                (),
+                {
+                    "summary": "Standup",
+                    "start": datetime(2026, 4, 2, 10, 0, tzinfo=timezone.utc),
+                    "end": datetime(2026, 4, 2, 10, 30, tzinfo=timezone.utc),
+                },
+            )
+        ]
 
     def confirm_approval(self, *, chat_id: int, user_id: int, token: str) -> str:
         self.confirm_calls.append((chat_id, user_id, token))
@@ -158,6 +195,8 @@ def test_chat_handler_sends_inline_approval_buttons(tmp_path: Path) -> None:
 
     assert len(message.replies) == 1
     reply = message.replies[0]
+    assert "I can do that for:" not in reply["text"]
+    assert reply["text"].startswith("Please confirm this action.")
     assert "Proposed action: Add task Buy apples" in reply["text"]
     markup = reply["reply_markup"]
     assert markup is not None
@@ -237,3 +276,51 @@ def test_approval_callback_handler_respects_allowed_chat_ids(tmp_path: Path) -> 
     assert assistant.confirm_calls == []
     assert query.answers[0]["text"] == "This bot is not enabled for this chat."
     assert query.answers[0]["show_alert"] is True
+
+
+def test_reminder_add_interactive_flow_creates_pending_approval(tmp_path: Path) -> None:
+    assistant = FakeAssistant()
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path),
+        assistant=assistant,
+        ai_client=FakeAIClient(),
+        transcriber=FakeSpeechToText(),
+    )
+
+    start_message = FakeMessage()
+    start_update = FakeUpdate(effective_message=start_message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+    asyncio.run(bot.reminder_handler(start_update, FakeContext(bot=FakeBot(), args=["add"])))
+    assert start_message.replies[0]["text"] == "What should I remind you about? Use /cancel to stop."
+
+    message_step = FakeMessage(text="Call mom")
+    message_update = FakeUpdate(effective_message=message_step, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+    asyncio.run(bot.chat_handler(message_update, FakeContext(bot=FakeBot())))
+    assert "When should I remind you?" in message_step.replies[0]["text"]
+
+    when_step = FakeMessage(text="tomorrow 09:30")
+    when_update = FakeUpdate(effective_message=when_step, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+    asyncio.run(bot.chat_handler(when_update, FakeContext(bot=FakeBot())))
+
+    assert assistant.pending_calls[-1]["action_type"] == "create_reminder"
+    assert assistant.pending_calls[-1]["payload"] == {"when_local": "2026-04-02 09:30", "message": "Call mom"}
+    assert when_step.replies[0]["text"].startswith("Please confirm this action.")
+
+
+def test_calendar_tomorrow_formats_window_and_event_list(tmp_path: Path) -> None:
+    assistant = FakeAssistant()
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path),
+        assistant=assistant,
+        ai_client=FakeAIClient(),
+        transcriber=FakeSpeechToText(),
+    )
+
+    message = FakeMessage()
+    update = FakeUpdate(effective_message=message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+    asyncio.run(bot.calendar_handler(update, FakeContext(bot=FakeBot(), args=["tomorrow"])))
+
+    assert assistant.between_calls, "expected calendar window call"
+    start_local, end_local = assistant.between_calls[0]
+    assert (end_local - start_local).days == 1
+    assert message.replies[0]["text"].startswith("Tomorrow:")
+    assert "Standup" in message.replies[0]["text"]
