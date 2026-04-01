@@ -63,6 +63,8 @@ This keeps the grouped namespace feel you wanted while staying Telegram-compatib
 - `/confirm <token>`
 - `/reject <token>`
 
+AI approvals now use **inline Confirm / Deny buttons** by default. The slash commands remain as fallback.
+
 ### AI mode
 
 If you send a normal message without a slash command:
@@ -205,7 +207,7 @@ docker compose --env-file .env.example config
    add buy cat food to my shopping list
    ```
 
-7. Confirm the proposed action with `/confirm <token>`.
+7. Confirm the proposed action with the inline button, or fallback to `/confirm <token>`.
 
 ## Notes
 

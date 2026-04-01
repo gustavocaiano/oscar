@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from personal_assistant_bot.ai import AIBackendError, AIResponse, OpenAICompatibleAI
 from personal_assistant_bot.config import Settings
@@ -17,6 +26,8 @@ from personal_assistant_bot.storage import ListItem, NoteItem, ReminderItem
 
 
 logger = logging.getLogger(__name__)
+
+APPROVAL_CALLBACK_PATTERN = re.compile(r"^(approve|reject):([0-9a-f]+)$")
 
 
 ROOT_COMMANDS = [
@@ -53,6 +64,7 @@ class PersonalAssistantBot:
         application.add_handler(CommandHandler("pref", self.preference_handler))
         application.add_handler(CommandHandler("confirm", self.confirm_handler))
         application.add_handler(CommandHandler("reject", self.reject_handler))
+        application.add_handler(CallbackQueryHandler(self.approval_callback_handler, pattern=r"^(approve|reject):"))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat_handler))
         application.add_error_handler(self.error_handler)
         application.job_queue.run_repeating(self.scheduler_tick, interval=self.settings.reminder_scan_seconds, first=10)
@@ -320,6 +332,48 @@ class PersonalAssistantBot:
         except AssistantError as exc:
             await update.effective_message.reply_text(str(exc))
 
+    async def approval_callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        query = update.callback_query
+        if query is None:
+            return
+
+        action_token = self._parse_approval_callback_data(query.data)
+        if action_token is None:
+            await query.answer("Invalid approval action.", show_alert=True)
+            return
+
+        action, token = action_token
+        if update.effective_chat is None or update.effective_user is None:
+            await query.answer("This approval request is missing chat context.", show_alert=True)
+            return
+        if self.settings.allowed_chat_ids and update.effective_chat.id not in self.settings.allowed_chat_ids:
+            await query.answer("This bot is not enabled for this chat.", show_alert=True)
+            return
+
+        try:
+            if action == "approve":
+                result = self.assistant.confirm_approval(
+                    chat_id=update.effective_chat.id,
+                    user_id=update.effective_user.id,
+                    token=token,
+                )
+                final_text = f"✅ Approved — {result}"
+            else:
+                result = self.assistant.reject_approval(
+                    chat_id=update.effective_chat.id,
+                    user_id=update.effective_user.id,
+                    token=token,
+                )
+                final_text = f"❌ Rejected — {result}"
+        except AssistantError as exc:
+            await query.answer(str(exc), show_alert=True)
+            return
+
+        await query.answer("Action processed.")
+        if query.message is not None:
+            await query.edit_message_text(final_text)
+
     async def chat_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._ensure_access(update):
             return
@@ -349,6 +403,7 @@ class PersonalAssistantBot:
             return
 
         reply_text = ai_result.reply
+        reply_markup = None
         if ai_result.proposed_action:
             approval = self.assistant.create_pending_approval(
                 chat_id=chat_id,
@@ -360,11 +415,12 @@ class PersonalAssistantBot:
             reply_text = (
                 f"{ai_result.reply}\n\n"
                 f"Proposed action: {approval.prompt_text}\n"
-                f"Confirm with /confirm {approval.token} or reject with /reject {approval.token}."
+                f"Use the buttons below, or fallback to /confirm {approval.token} / /reject {approval.token}."
             )
+            reply_markup = self._build_approval_keyboard(approval)
 
         self.assistant.add_chat_history(chat_id=chat_id, user_id=user_id, role="assistant", content=reply_text)
-        await update.effective_message.reply_text(reply_text)
+        await update.effective_message.reply_text(reply_text, reply_markup=reply_markup)
 
     async def scheduler_tick(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         notifications = self.assistant.get_due_notifications(now_utc=datetime.now(timezone.utc))
@@ -468,9 +524,27 @@ class PersonalAssistantBot:
             "/h add 2h 30m\n"
             "/h month 04\n"
             "/pref show\n"
-            "/confirm TOKEN or /reject TOKEN\n\n"
+            "AI approval buttons are shown automatically; /confirm TOKEN and /reject TOKEN remain as fallback.\n\n"
             "If you send a normal message, the assistant uses AI chat mode, can inspect your assistant data, and asks before writing changes."
         )
+
+    def _build_approval_keyboard(self, approval: PendingApproval) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Confirm", callback_data=f"approve:{approval.token}"),
+                    InlineKeyboardButton("Deny", callback_data=f"reject:{approval.token}"),
+                ]
+            ]
+        )
+
+    def _parse_approval_callback_data(self, raw_data: str | None) -> tuple[str, str] | None:
+        if not raw_data:
+            return None
+        match = APPROVAL_CALLBACK_PATTERN.fullmatch(raw_data)
+        if match is None:
+            return None
+        return match.group(1), match.group(2)
 
     def _format_list_items(self, items: Iterable[ListItem], *, singular: str) -> str:
         items = list(items)
