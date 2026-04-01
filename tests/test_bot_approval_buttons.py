@@ -8,6 +8,7 @@ from personal_assistant_bot.ai import AIResponse
 from personal_assistant_bot.bot import PersonalAssistantBot
 from personal_assistant_bot.config import Settings
 from personal_assistant_bot.services import PendingApproval
+from personal_assistant_bot.speech import TranscriptionResult
 
 
 def build_settings(tmp_path: Path) -> Settings:
@@ -133,11 +134,21 @@ class FakeAIClient:
         )
 
 
+class FakeSpeechToText:
+    def unavailable_message(self):
+        return None
+
+    async def transcribe_file(self, audio_path):
+        del audio_path
+        return TranscriptionResult(text="hello")
+
+
 def test_chat_handler_sends_inline_approval_buttons(tmp_path: Path) -> None:
     bot = PersonalAssistantBot(
         settings=build_settings(tmp_path),
         assistant=FakeAssistant(),
         ai_client=FakeAIClient(),
+        transcriber=FakeSpeechToText(),
     )
     message = FakeMessage(text="add buy apples to my tasks")
     update = FakeUpdate(effective_message=message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
@@ -157,7 +168,9 @@ def test_chat_handler_sends_inline_approval_buttons(tmp_path: Path) -> None:
 
 def test_approval_callback_handler_confirms_action(tmp_path: Path) -> None:
     assistant = FakeAssistant()
-    bot = PersonalAssistantBot(settings=build_settings(tmp_path), assistant=assistant, ai_client=FakeAIClient())
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path), assistant=assistant, ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
+    )
     query = FakeCallbackQuery(data="approve:abc123")
     update = FakeUpdate(
         effective_message=None,
@@ -175,7 +188,9 @@ def test_approval_callback_handler_confirms_action(tmp_path: Path) -> None:
 
 def test_approval_callback_handler_rejects_action(tmp_path: Path) -> None:
     assistant = FakeAssistant()
-    bot = PersonalAssistantBot(settings=build_settings(tmp_path), assistant=assistant, ai_client=FakeAIClient())
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path), assistant=assistant, ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
+    )
     query = FakeCallbackQuery(data="reject:abc123")
     update = FakeUpdate(
         effective_message=None,
@@ -192,7 +207,9 @@ def test_approval_callback_handler_rejects_action(tmp_path: Path) -> None:
 
 
 def test_parse_approval_callback_data_rejects_invalid_input(tmp_path: Path) -> None:
-    bot = PersonalAssistantBot(settings=build_settings(tmp_path), assistant=FakeAssistant(), ai_client=FakeAIClient())
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path), assistant=FakeAssistant(), ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
+    )
 
     assert bot._parse_approval_callback_data("approve:abc123") == ("approve", "abc123")
     assert bot._parse_approval_callback_data("reject:abc123") == ("reject", "abc123")
@@ -204,7 +221,9 @@ def test_approval_callback_handler_respects_allowed_chat_ids(tmp_path: Path) -> 
     settings = build_settings(tmp_path)
     settings = Settings(**{**settings.__dict__, "allowed_chat_ids": frozenset({999})})
     assistant = FakeAssistant()
-    bot = PersonalAssistantBot(settings=settings, assistant=assistant, ai_client=FakeAIClient())
+    bot = PersonalAssistantBot(
+        settings=settings, assistant=assistant, ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
+    )
     query = FakeCallbackQuery(data="approve:abc123")
     update = FakeUpdate(
         effective_message=None,

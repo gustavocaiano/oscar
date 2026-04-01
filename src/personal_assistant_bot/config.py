@@ -31,6 +31,16 @@ class Settings:
     caldav_password: str | None
     caldav_calendar_name: str | None
     log_level: int
+    stt_enabled: bool = False
+    stt_model: str = "base"
+    stt_device: str = "cpu"
+    stt_compute_type: str = "int8"
+    stt_language: str | None = None
+    stt_vad_filter: bool = True
+    stt_max_duration_seconds: int = 60
+    stt_max_file_size_mb: int = 10
+    stt_model_dir: Path = Path("/models/whisper")
+    stt_echo_transcript: bool = True
 
     @property
     def backend_enabled(self) -> bool:
@@ -94,6 +104,18 @@ def _parse_allowed_chat_ids(raw_value: str | None) -> frozenset[int]:
     return frozenset(ids)
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigurationError(f"Environment variable {name} must be a boolean")
+
+
 def load_settings() -> Settings:
     log_level_name = os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"
     log_level = getattr(logging, log_level_name, None)
@@ -120,4 +142,14 @@ def load_settings() -> Settings:
         caldav_password=_optional_env("CALDAV_PASSWORD"),
         caldav_calendar_name=_optional_env("CALDAV_CALENDAR_NAME"),
         log_level=log_level,
+        stt_enabled=_bool_env("STT_ENABLED", False),
+        stt_model=os.getenv("STT_MODEL", "base").strip() or "base",
+        stt_device=os.getenv("STT_DEVICE", "cpu").strip() or "cpu",
+        stt_compute_type=os.getenv("STT_COMPUTE_TYPE", "int8").strip() or "int8",
+        stt_language=_optional_env("STT_LANGUAGE"),
+        stt_vad_filter=_bool_env("STT_VAD_FILTER", True),
+        stt_max_duration_seconds=max(1, _int_env("STT_MAX_DURATION_SECONDS", 60)),
+        stt_max_file_size_mb=max(1, _int_env("STT_MAX_FILE_SIZE_MB", 10)),
+        stt_model_dir=Path(os.getenv("STT_MODEL_DIR", "/models/whisper")).expanduser(),
+        stt_echo_transcript=_bool_env("STT_ECHO_TRANSCRIPT", True),
     )

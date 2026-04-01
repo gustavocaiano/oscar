@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import re
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update, Voice
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -22,6 +24,12 @@ from personal_assistant_bot.ai import AIBackendError, AIResponse, OpenAICompatib
 from personal_assistant_bot.config import Settings
 from personal_assistant_bot.hours import parse_getmm
 from personal_assistant_bot.services import AssistantError, AssistantService, PendingApproval
+from personal_assistant_bot.speech import (
+    LocalSpeechTranscriber,
+    SpeechToTextBusyError,
+    SpeechToTextFailedError,
+    SpeechToTextUnavailableError,
+)
 from personal_assistant_bot.storage import ListItem, NoteItem, ReminderItem
 
 
@@ -46,10 +54,18 @@ ROOT_COMMANDS = [
 
 
 class PersonalAssistantBot:
-    def __init__(self, *, settings: Settings, assistant: AssistantService, ai_client: OpenAICompatibleAI):
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        assistant: AssistantService,
+        ai_client: OpenAICompatibleAI,
+        transcriber: LocalSpeechTranscriber,
+    ):
         self.settings = settings
         self.assistant = assistant
         self.ai_client = ai_client
+        self.transcriber = transcriber
 
     def build_application(self) -> Application:
         application = ApplicationBuilder().token(self.settings.telegram_bot_token).post_init(self._post_init).build()
@@ -65,6 +81,8 @@ class PersonalAssistantBot:
         application.add_handler(CommandHandler("confirm", self.confirm_handler))
         application.add_handler(CommandHandler("reject", self.reject_handler))
         application.add_handler(CallbackQueryHandler(self.approval_callback_handler, pattern=r"^(approve|reject):"))
+        application.add_handler(MessageHandler(filters.VOICE, self.voice_handler))
+        application.add_handler(MessageHandler(filters.AUDIO, self.unsupported_audio_handler))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat_handler))
         application.add_error_handler(self.error_handler)
         application.job_queue.run_repeating(self.scheduler_tick, interval=self.settings.reminder_scan_seconds, first=10)
@@ -374,6 +392,56 @@ class PersonalAssistantBot:
         if query.message is not None:
             await query.edit_message_text(final_text)
 
+    async def voice_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._ensure_access(update):
+            return
+        message = update.effective_message
+        if message is None or message.voice is None:
+            return
+
+        voice = message.voice
+        limit_error = self._validate_voice_note_limits(voice)
+        if limit_error is not None:
+            await message.reply_text(limit_error)
+            return
+
+        unavailable_message = self.transcriber.unavailable_message()
+        if unavailable_message is not None:
+            await message.reply_text(unavailable_message)
+            return
+
+        chat_id, user_id = self._chat_and_user(update)
+        try:
+            downloaded_path, transcript = await self._download_and_transcribe_voice_note(message, context)
+        except (SpeechToTextUnavailableError, SpeechToTextBusyError, SpeechToTextFailedError, AssistantError) as exc:
+            await message.reply_text(str(exc))
+            return
+
+        transcript_feedback = None
+        if self.settings.stt_echo_transcript:
+            transcript_feedback = transcript.text
+
+        await self._process_non_command_text(
+            message=message,
+            context=context,
+            chat_id=chat_id,
+            user_id=user_id,
+            user_message=transcript.text,
+            transcript_feedback=transcript_feedback,
+        )
+
+        if downloaded_path.exists():
+            raise AssistantError("Temporary voice-note file cleanup failed")
+
+    async def unsupported_audio_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if not await self._ensure_access(update):
+            return
+        if update.effective_message is not None:
+            await update.effective_message.reply_text(
+                "Only Telegram voice notes are supported for local transcription right now. Normal audio files are not yet supported."
+            )
+
     async def chat_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._ensure_access(update):
             return
@@ -383,10 +451,27 @@ class PersonalAssistantBot:
         user_message = update.effective_message.text.strip()
         if not user_message:
             return
+        await self._process_non_command_text(
+            message=update.effective_message,
+            context=context,
+            chat_id=chat_id,
+            user_id=user_id,
+            user_message=user_message,
+        )
+
+    async def _process_non_command_text(
+        self,
+        *,
+        message,
+        context: ContextTypes.DEFAULT_TYPE,
+        chat_id: int,
+        user_id: int,
+        user_message: str,
+        transcript_feedback: str | None = None,
+    ) -> None:
         if not self.ai_client.configured:
-            await update.effective_message.reply_text(
-                "AI chat is not configured yet. Deterministic commands still work."
-            )
+            unavailable_text = "AI chat is not configured yet. Deterministic commands still work."
+            await message.reply_text(self._prepend_transcript_feedback(unavailable_text, transcript_feedback))
             return
 
         self.assistant.ensure_chat(chat_id=chat_id, user_id=user_id)
@@ -399,7 +484,7 @@ class PersonalAssistantBot:
             ai_result = await self.ai_client.respond(user_message=user_message, history=history, tool_snapshot=snapshot)
         except AIBackendError as exc:
             logger.warning("AI backend failure: %s", exc)
-            await update.effective_message.reply_text(str(exc))
+            await message.reply_text(self._prepend_transcript_feedback(str(exc), transcript_feedback))
             return
 
         reply_text = ai_result.reply
@@ -420,7 +505,10 @@ class PersonalAssistantBot:
             reply_markup = self._build_approval_keyboard(approval)
 
         self.assistant.add_chat_history(chat_id=chat_id, user_id=user_id, role="assistant", content=reply_text)
-        await update.effective_message.reply_text(reply_text, reply_markup=reply_markup)
+        await message.reply_text(
+            self._prepend_transcript_feedback(reply_text, transcript_feedback),
+            reply_markup=reply_markup,
+        )
 
     async def scheduler_tick(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         notifications = self.assistant.get_due_notifications(now_utc=datetime.now(timezone.utc))
@@ -525,6 +613,7 @@ class PersonalAssistantBot:
             "/h month 04\n"
             "/pref show\n"
             "AI approval buttons are shown automatically; /confirm TOKEN and /reject TOKEN remain as fallback.\n\n"
+            "You can also send a Telegram voice note and, if local speech-to-text is enabled, the assistant will transcribe it and process it like a normal message.\n\n"
             "If you send a normal message, the assistant uses AI chat mode, can inspect your assistant data, and asks before writing changes."
         )
 
@@ -545,6 +634,55 @@ class PersonalAssistantBot:
         if match is None:
             return None
         return match.group(1), match.group(2)
+
+    def _validate_voice_note_limits(self, voice: Voice) -> str | None:
+        if voice.duration > self.settings.stt_max_duration_seconds:
+            return (
+                f"Voice notes longer than {self.settings.stt_max_duration_seconds} seconds are not supported on this server."
+            )
+        if voice.file_size is not None and voice.file_size > self.settings.stt_max_file_size_mb * 1024 * 1024:
+            return (
+                f"Voice notes larger than {self.settings.stt_max_file_size_mb} MB are not supported on this server."
+            )
+        return None
+
+    async def _download_and_transcribe_voice_note(self, message, context: ContextTypes.DEFAULT_TYPE):
+        attachment = message.effective_attachment
+        if attachment is None:
+            raise AssistantError("The voice note attachment could not be accessed.")
+
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
+        voice: Voice = message.voice
+        file_extension = self._media_suffix_from_mime_type(voice.mime_type)
+
+        with tempfile.TemporaryDirectory(prefix="assistant-voice-") as temporary_dir:
+            audio_path = Path(temporary_dir) / f"{voice.file_unique_id}{file_extension}"
+            try:
+                telegram_file = await attachment.get_file()
+                await telegram_file.download_to_drive(str(audio_path))
+            except Exception as exc:  # pragma: no cover - network/download failure is hard to unit-test here
+                raise SpeechToTextFailedError("Failed to download the voice note for transcription.") from exc
+            downloaded_size = audio_path.stat().st_size
+            if downloaded_size > self.settings.stt_max_file_size_mb * 1024 * 1024:
+                raise SpeechToTextFailedError(
+                    f"Voice notes larger than {self.settings.stt_max_file_size_mb} MB are not supported on this server."
+                )
+            transcript = await self.transcriber.transcribe_file(audio_path)
+            downloaded_path = Path(audio_path)
+
+        return downloaded_path, transcript
+
+    def _media_suffix_from_mime_type(self, mime_type: str | None) -> str:
+        if mime_type == "audio/ogg":
+            return ".ogg"
+        if mime_type == "audio/mp4":
+            return ".m4a"
+        return ".audio"
+
+    def _prepend_transcript_feedback(self, reply_text: str, transcript_feedback: str | None) -> str:
+        if not transcript_feedback:
+            return reply_text
+        return f'Heard: "{transcript_feedback}"\n\n{reply_text}'
 
     def _format_list_items(self, items: Iterable[ListItem], *, singular: str) -> str:
         items = list(items)
