@@ -41,6 +41,12 @@ class Settings:
     stt_max_file_size_mb: int = 10
     stt_model_dir: Path = Path("/models/whisper")
     stt_echo_transcript: bool = True
+    kbplus_base_url: str | None = None
+    kbplus_api_token: str | None = None
+    kbplus_board_id: str | None = None
+    kbplus_todo_column_id: str | None = None
+    kbplus_done_column_id: str | None = None
+    kbplus_timeout_seconds: float = 10.0
 
     @property
     def backend_enabled(self) -> bool:
@@ -49,6 +55,16 @@ class Settings:
     @property
     def caldav_enabled(self) -> bool:
         return bool(self.caldav_url and self.caldav_username and self.caldav_password)
+
+    @property
+    def kbplus_enabled(self) -> bool:
+        return bool(
+            self.kbplus_base_url
+            and self.kbplus_api_token
+            and self.kbplus_board_id
+            and self.kbplus_todo_column_id
+            and self.kbplus_done_column_id
+        )
 
 
 def _required_env(name: str) -> str:
@@ -152,4 +168,10 @@ def load_settings() -> Settings:
         stt_max_file_size_mb=max(1, _int_env("STT_MAX_FILE_SIZE_MB", 10)),
         stt_model_dir=Path(os.getenv("STT_MODEL_DIR", "/models/whisper")).expanduser(),
         stt_echo_transcript=_bool_env("STT_ECHO_TRANSCRIPT", True),
+        kbplus_base_url=_optional_env("KBPLUS_BASE_URL"),
+        kbplus_api_token=_optional_env("KBPLUS_API_TOKEN"),
+        kbplus_board_id=_optional_env("KBPLUS_BOARD_ID"),
+        kbplus_todo_column_id=_optional_env("KBPLUS_TODO_COLUMN_ID"),
+        kbplus_done_column_id=_optional_env("KBPLUS_DONE_COLUMN_ID"),
+        kbplus_timeout_seconds=max(1.0, _float_env("KBPLUS_TIMEOUT_SECONDS", 10.0)),
     )

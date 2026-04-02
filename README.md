@@ -73,13 +73,22 @@ If you send a normal message without a slash command:
 - the assistant uses the configured OpenAI-compatible backend
 - it can read your tasks, shopping items, reminders, notes, hours, and agenda
 - if it wants to write data, it proposes an action and asks you to confirm it first
+- it can now propose multiple themed tool actions in one turn and bundle them into one confirmation request
 
-Supported AI-originated write proposals in the current implementation:
+Supported AI-originated write proposals are grouped by theme in the current implementation:
 
-- create task
-- add shopping items
-- create note
-- create reminder
+- tasks
+- shopping
+- notes
+- reminders
+- calendar
+
+Examples of what the AI can now propose in one request:
+
+- create multiple tasks
+- add multiple shopping items
+- create a reminder plus a calendar event
+- rename or complete an existing task/shopping item
 
 ### Voice notes
 
@@ -126,6 +135,12 @@ Main variables:
 | `CALDAV_USERNAME` | for calendar | CalDAV username |
 | `CALDAV_PASSWORD` | for calendar | App-specific password recommended |
 | `CALDAV_CALENDAR_NAME` | no | Preferred calendar name |
+| `KBPLUS_BASE_URL` | no | KB+ base URL for the task backend |
+| `KBPLUS_API_TOKEN` | no | KB+ external integration bearer token |
+| `KBPLUS_BOARD_ID` | no | KB+ board id Oscar uses as the task source of truth |
+| `KBPLUS_TODO_COLUMN_ID` | no | KB+ column id where Oscar creates new tasks |
+| `KBPLUS_DONE_COLUMN_ID` | no | KB+ column id Oscar uses when completing tasks |
+| `KBPLUS_TIMEOUT_SECONDS` | no | KB+ request timeout |
 | `STT_ENABLED` | no | Enable local speech-to-text for Telegram voice notes |
 | `STT_MODEL` | no | Whisper model name, default `base` |
 | `STT_DEVICE` | no | Inference device, default `cpu` |
@@ -149,6 +164,28 @@ Typical setup values:
 - `CALDAV_CALENDAR_NAME=<optional exact calendar name>`
 
 If CalDAV is not configured, the rest of the assistant still works and calendar commands return a clear message.
+
+The briefing/calendar snapshot now distinguishes between:
+
+- no upcoming events
+- calendar integration unavailable
+- calendar read errors such as missing/mismatched calendar names
+
+## KB+ task backend
+
+Oscar can optionally use KB+ as the **task source of truth** when the KB+ integration variables are configured.
+
+Current Oscar-side behavior:
+
+- KB+ becomes the task backend for `/task ...` commands and AI task actions
+- `/task list` groups non-done tasks by KB+ column name
+- new tasks are created in `KBPLUS_TODO_COLUMN_ID`
+- `/task done ...` moves the task into `KBPLUS_DONE_COLUMN_ID`
+- all other KB+ columns are treated as non-done/open columns for listing purposes
+- Oscar local storage remains the source of truth for shopping items, reminders, notes, hours, and chat history
+- KB+ integration is inactive unless all KB+ environment variables are set
+
+The corresponding KB+ server-side integration endpoints and token UI are described in `kbplus-changes.md`.
 
 ## AI backend setup
 

@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
+import logging
 from typing import Any
 
 try:  # pragma: no cover - exercised indirectly depending on environment
     from caldav import DAVClient
 except ImportError:  # pragma: no cover - allows unit tests without installed deps
     DAVClient = None  # type: ignore[assignment]
+
+
+logger = logging.getLogger(__name__)
 
 
 class CalendarIntegrationError(RuntimeError):
@@ -51,24 +55,56 @@ class CalendarService:
     def configured(self) -> bool:
         return bool(self.url and self.username and self.password)
 
+    def _calendar_display_name(self, calendar: Any) -> str | None:
+        if hasattr(calendar, "get_display_name"):
+            try:
+                display_name = calendar.get_display_name()
+            except Exception:  # pragma: no cover - depends on remote CalDAV server behavior
+                display_name = None
+            if display_name:
+                return str(display_name).strip()
+        raw_name = getattr(calendar, "name", None)
+        if raw_name:
+            return str(raw_name).strip()
+        return None
+
+    def _normalize_calendar_name(self, value: str) -> str:
+        return " ".join(value.strip().casefold().split())
+
     def _get_calendar(self):
         if not self.configured:
             raise CalendarIntegrationError("Calendar integration is not configured")
         if DAVClient is None:
             raise CalendarIntegrationError("The 'caldav' package is not installed")
         client = DAVClient(url=self.url, username=self.username, password=self.password)
-        principal = client.principal()
-        calendars = principal.calendars()
-        if not calendars:
-            raise CalendarIntegrationError("No calendars were found for the configured CalDAV account")
-        if self.calendar_name:
-            for calendar in calendars:
-                if getattr(calendar, "name", None) == self.calendar_name:
-                    return client, calendar
-            raise CalendarIntegrationError(
-                f"Calendar '{self.calendar_name}' was not found in the configured CalDAV account"
-            )
-        return client, calendars[0]
+        try:
+            principal = client.principal()
+            calendars = principal.get_calendars() if hasattr(principal, "get_calendars") else principal.calendars()
+            if not calendars:
+                raise CalendarIntegrationError("No calendars were found for the configured CalDAV account")
+            if self.calendar_name:
+                target_name = self._normalize_calendar_name(self.calendar_name)
+                try:
+                    direct_calendar = principal.calendar(name=self.calendar_name.strip())
+                    direct_name = self._calendar_display_name(direct_calendar) or self.calendar_name.strip()
+                    logger.info("Resolved CalDAV calendar via direct lookup: %s", direct_name)
+                    return client, direct_calendar
+                except Exception as exc:  # pragma: no cover - depends on remote CalDAV server behavior
+                    logger.warning("Direct CalDAV calendar lookup failed for '%s': %s", self.calendar_name, exc)
+                for calendar in calendars:
+                    display_name = self._calendar_display_name(calendar)
+                    if display_name and self._normalize_calendar_name(display_name) == target_name:
+                        logger.info("Resolved CalDAV calendar via display name: %s", display_name)
+                        return client, calendar
+                raise CalendarIntegrationError(
+                    f"Calendar '{self.calendar_name}' was not found in the configured CalDAV account"
+                )
+            default_name = self._calendar_display_name(calendars[0]) or "first available calendar"
+            logger.info("Using default CalDAV calendar: %s", default_name)
+            return client, calendars[0]
+        except Exception:
+            client.close()
+            raise
 
     def list_events(self, *, start: datetime, end: datetime) -> list[CalendarEvent]:
         client, calendar = self._get_calendar()

@@ -21,17 +21,127 @@ class AIBackendError(RuntimeError):
 class AIResponse:
     reply: str
     proposed_action: dict[str, Any] | None = None
+    tool_plan: list[dict[str, Any]] | None = None
     proposal_error: str | None = None
 
 
 class OpenAICompatibleAI:
-    SUPPORTED_ACTIONS = {
+    LEGACY_SUPPORTED_ACTIONS = {
         "create_task",
         "add_shopping_items",
         "create_note",
         "create_reminder",
         "create_calendar_event",
     }
+    SUPPORTED_TOOLS = {"tasks", "shopping", "notes", "reminders", "calendar"}
+
+    PROPOSAL_TOOLS: list[dict[str, Any]] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "tasks",
+                "description": "Plan task changes such as creating, renaming, or completing one or more tasks.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["create", "create_many", "rename", "complete"],
+                        },
+                        "title": {"type": "string"},
+                        "titles": {"type": "array", "items": {"type": "string"}},
+                        "id": {"type": "string"},
+                    },
+                    "required": ["operation"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "shopping",
+                "description": "Plan shopping-list changes such as adding, renaming, or completing items.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["create", "create_many", "rename", "complete"],
+                        },
+                        "title": {"type": "string"},
+                        "titles": {"type": "array", "items": {"type": "string"}},
+                        "id": {"type": "integer"},
+                    },
+                    "required": ["operation"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "notes",
+                "description": "Plan note or inbox capture actions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create"]},
+                        "kind": {"type": "string", "enum": ["note", "inbox"]},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["operation", "content"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "reminders",
+                "description": "Plan reminder changes such as creating, completing, or cancelling reminders.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create", "complete", "cancel"]},
+                        "message": {"type": "string"},
+                        "when_local": {
+                            "type": "string",
+                            "description": "Local date/time in exact format YYYY-MM-DD HH:MM when creating reminders.",
+                        },
+                        "id": {"type": "integer"},
+                    },
+                    "required": ["operation"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "calendar",
+                "description": "Plan calendar event creation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create"]},
+                        "summary": {"type": "string"},
+                        "start_local": {
+                            "type": "string",
+                            "description": "Local start date/time in exact format YYYY-MM-DD HH:MM.",
+                        },
+                        "end_local": {
+                            "type": "string",
+                            "description": "Local end date/time in exact format YYYY-MM-DD HH:MM.",
+                        },
+                        "description": {"type": "string"},
+                    },
+                    "required": ["operation", "summary", "start_local", "end_local"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    ]
 
     def __init__(self, *, base_url: str | None, api_key: str | None, model: str | None, timeout_seconds: float):
         self.base_url = base_url.rstrip("/") if base_url else None
@@ -57,17 +167,13 @@ class OpenAICompatibleAI:
             {
                 "role": "system",
                 "content": (
-                    "You are a Telegram personal assistant. You may read the provided personal data snapshot to help the user. "
-                    "If the user is asking to create or change structured assistant data, you may propose exactly one supported action, but you must never say the action already happened because the app will ask the user to confirm it first. "
-                    "For write intents, do exactly one of these: ask one short follow-up question if required fields are missing or ambiguous; OR return a valid proposed_action. "
-                    "Supported actions: create_task, add_shopping_items, create_note, create_reminder, create_calendar_event. "
-                    "If the user is confirming a reminder or calendar action that was just described earlier in the chat, return the structured proposed_action instead of repeating prose. "
-                    "When proposing create_reminder, payload.when_local must use exact format YYYY-MM-DD HH:MM and payload.message must be non-empty. "
-                    "When proposing create_calendar_event, payload.summary, payload.start_local, and payload.end_local are required, and the date/time values must use exact format YYYY-MM-DD HH:MM. payload.description is optional. "
-                    "proposed_action may also include a short label string, but it is optional. "
-                    "Examples: {\"reply\":\"Please confirm this reminder.\",\"proposed_action\":{\"action_type\":\"create_reminder\",\"payload\":{\"when_local\":\"2026-04-02 20:00\",\"message\":\"Jesus memorial\"},\"label\":\"Create reminder: Jesus memorial\"}} "
-                    "and {\"reply\":\"What time should it end?\",\"proposed_action\":null}. "
-                    "Return strict JSON only with this shape: {\"reply\": string, \"proposed_action\": null|object}."
+                    "You are a Telegram personal assistant. Use the provided personal data snapshot to answer read/list questions directly. "
+                    "If the user wants to create or change structured assistant data, use the provided function tools to propose the changes. "
+                    "You may call multiple tools in one response. The app will ask the user to confirm before any write happens, so never say a write already happened. "
+                    "For write intents, do exactly one of these: ask one short follow-up question if required fields are missing or ambiguous; OR call one or more tools. "
+                    "Prefer the snapshot for read queries instead of function tools. "
+                    "When creating reminders or calendar events, every local date/time must use exact format YYYY-MM-DD HH:MM. "
+                    "Task ids in the snapshot may be opaque strings from KB+; when renaming or completing tasks, copy the task id exactly as shown."
                 ),
             },
             {
@@ -86,6 +192,9 @@ class OpenAICompatibleAI:
             "model": self.model,
             "messages": prompt_messages,
             "temperature": 0.2,
+            "tools": self.PROPOSAL_TOOLS,
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
         }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -102,34 +211,42 @@ class OpenAICompatibleAI:
         except httpx.HTTPError as exc:
             raise AIBackendError(f"The AI backend request failed: {exc}") from exc
 
-        content = self._extract_content(data)
+        message_payload = self._extract_message(data)
+        content = self._extract_content(message_payload)
+        tool_plan, tool_error = self._extract_tool_plan(message_payload)
+        if tool_plan is not None:
+            reply = content.strip() or "I prepared a request for confirmation."
+            return AIResponse(reply=reply, tool_plan=tool_plan, proposal_error=tool_error)
+
         parsed = self._parse_json(content)
         if parsed is None:
-            logger.warning("AI response was not valid JSON: %s", content)
             return AIResponse(
                 reply=content.strip() or "I could not generate a response.",
-                proposal_error="unstructured_response",
+                proposal_error=tool_error,
             )
 
         reply = str(parsed.get("reply") or "").strip() or "I processed your message."
         proposed_action = parsed.get("proposed_action")
         if not isinstance(proposed_action, dict):
-            return AIResponse(reply=reply)
+            return AIResponse(reply=reply, proposal_error=tool_error)
 
         action_type = proposed_action.get("action_type")
-        if action_type not in self.SUPPORTED_ACTIONS:
+        if action_type not in self.LEGACY_SUPPORTED_ACTIONS:
             logger.warning("Ignoring unsupported AI action: %s", action_type)
             return AIResponse(reply=reply, proposal_error=f"unsupported_action:{action_type}")
-        return AIResponse(reply=reply, proposed_action=proposed_action)
+        return AIResponse(reply=reply, proposed_action=proposed_action, proposal_error=tool_error)
 
-    def _extract_content(self, payload: dict[str, Any]) -> str:
+    def _extract_message(self, payload: dict[str, Any]) -> dict[str, Any]:
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices:
             raise AIBackendError("The AI backend returned no choices")
         message = choices[0].get("message")
         if not isinstance(message, dict):
             raise AIBackendError("The AI backend returned an invalid message payload")
-        content = message.get("content")
+        return message
+
+    def _extract_content(self, message_payload: dict[str, Any]) -> str:
+        content = message_payload.get("content")
         if isinstance(content, str):
             return content
         if isinstance(content, list):
@@ -140,10 +257,48 @@ class OpenAICompatibleAI:
                 elif isinstance(item, dict) and isinstance(item.get("text"), str):
                     parts.append(item["text"])
             return "\n".join(parts)
-        raise AIBackendError("The AI backend returned unsupported content")
+        return ""
+
+    def _extract_tool_plan(self, message_payload: dict[str, Any]) -> tuple[list[dict[str, Any]] | None, str | None]:
+        tool_calls = message_payload.get("tool_calls")
+        if tool_calls is None:
+            return None, None
+        if not isinstance(tool_calls, list) or not tool_calls:
+            return None, "invalid_tool_calls"
+
+        steps: list[dict[str, Any]] = []
+        for raw_call in tool_calls:
+            if not isinstance(raw_call, dict):
+                return None, "invalid_tool_call_entry"
+            if raw_call.get("type") != "function":
+                return None, "unsupported_tool_type"
+            function_payload = raw_call.get("function")
+            if not isinstance(function_payload, dict):
+                return None, "invalid_tool_call_payload"
+            name = str(function_payload.get("name") or "").strip()
+            if name not in self.SUPPORTED_TOOLS:
+                logger.warning("Ignoring unsupported AI tool: %s", name)
+                return None, f"unsupported_tool:{name}"
+            arguments_text = str(function_payload.get("arguments") or "{}").strip()
+            try:
+                arguments = json.loads(arguments_text)
+            except json.JSONDecodeError:
+                logger.warning("AI tool call arguments were not valid JSON: %s", arguments_text)
+                return None, f"invalid_tool_arguments:{name}"
+            if not isinstance(arguments, dict):
+                return None, f"invalid_tool_arguments:{name}"
+            operation = str(arguments.get("operation") or "").strip()
+            if not operation:
+                return None, f"missing_operation:{name}"
+            step_args = dict(arguments)
+            step_args.pop("operation", None)
+            steps.append({"tool": name, "operation": operation, "args": step_args})
+        return steps, None
 
     def _parse_json(self, content: str) -> dict[str, Any] | None:
         stripped = content.strip()
+        if not stripped:
+            return None
         try:
             loaded = json.loads(stripped)
             if isinstance(loaded, dict):

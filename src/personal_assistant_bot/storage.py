@@ -11,12 +11,13 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ListItem:
-    id: int
+    id: int | str
     kind: str
     title: str
     done: bool
     created_at: str
     updated_at: str
+    column_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,16 @@ class HourEntry:
     hours: Decimal
     raw_text: str
     created_at: str
+
+
+@dataclass(frozen=True)
+class TaskSyncLink:
+    list_item_id: int
+    provider: str
+    external_task_id: str
+    external_board_id: str | None
+    created_at: str
+    updated_at: str
 
 
 @dataclass(frozen=True)
@@ -210,6 +221,19 @@ class SQLiteStorage:
 
                 CREATE INDEX IF NOT EXISTS idx_hour_entries_scope
                 ON hour_entries (chat_id, user_id, entry_date, id);
+
+                CREATE TABLE IF NOT EXISTS task_sync_links (
+                    list_item_id INTEGER NOT NULL,
+                    provider TEXT NOT NULL,
+                    external_task_id TEXT NOT NULL,
+                    external_board_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (list_item_id, provider)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_task_sync_links_provider
+                ON task_sync_links (provider, external_task_id);
                 """
             )
 
@@ -431,6 +455,27 @@ class SQLiteStorage:
                 (now, now, item_id, user_id, chat_id, kind),
             )
             return cursor.rowcount > 0
+
+    def get_list_item(self, *, user_id: int, chat_id: int, kind: str, item_id: int) -> ListItem | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, kind, title, done, created_at, updated_at
+                FROM list_items
+                WHERE id = ? AND user_id = ? AND chat_id = ? AND kind = ?
+                """,
+                (item_id, user_id, chat_id, kind),
+            ).fetchone()
+        if row is None:
+            return None
+        return ListItem(
+            id=int(row["id"]),
+            kind=str(row["kind"]),
+            title=str(row["title"]),
+            done=bool(row["done"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
 
     def create_note(self, *, user_id: int, chat_id: int, kind: str, content: str) -> int:
         with self._connect() as connection:
@@ -663,6 +708,46 @@ class SQLiteStorage:
             prompt_text=str(row["prompt_text"]),
             status=str(row["status"]),
             expires_at=str(row["expires_at"]),
+        )
+
+    def upsert_task_sync_link(
+        self,
+        *,
+        list_item_id: int,
+        provider: str,
+        external_task_id: str,
+        external_board_id: str | None,
+    ) -> None:
+        now = self._now()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO task_sync_links (
+                    list_item_id, provider, external_task_id, external_board_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(list_item_id, provider) DO UPDATE SET
+                    external_task_id = excluded.external_task_id,
+                    external_board_id = excluded.external_board_id,
+                    updated_at = excluded.updated_at
+                """,
+                (list_item_id, provider, external_task_id, external_board_id, now, now),
+            )
+
+    def get_task_sync_link(self, *, list_item_id: int, provider: str) -> TaskSyncLink | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM task_sync_links WHERE list_item_id = ? AND provider = ?",
+                (list_item_id, provider),
+            ).fetchone()
+        if row is None:
+            return None
+        return TaskSyncLink(
+            list_item_id=int(row["list_item_id"]),
+            provider=str(row["provider"]),
+            external_task_id=str(row["external_task_id"]),
+            external_board_id=row["external_board_id"],
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
         )
 
     def update_approval_status(self, *, token: str, status: str) -> None:

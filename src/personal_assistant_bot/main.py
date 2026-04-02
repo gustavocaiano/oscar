@@ -7,6 +7,7 @@ from personal_assistant_bot.ai import OpenAICompatibleAI
 from personal_assistant_bot.bot import PersonalAssistantBot
 from personal_assistant_bot.calendar_integration import CalendarService
 from personal_assistant_bot.config import ConfigurationError, load_settings
+from personal_assistant_bot.kbplus_integration import KbplusTaskClient
 from personal_assistant_bot.services import AssistantService
 from personal_assistant_bot.speech import LocalSpeechTranscriber
 from personal_assistant_bot.storage import SQLiteStorage
@@ -28,7 +29,15 @@ def main() -> None:
         password=settings.caldav_password,
         calendar_name=settings.caldav_calendar_name,
     )
-    assistant = AssistantService(storage=storage, calendar=calendar_service, settings=settings)
+    kbplus_client = KbplusTaskClient(
+        base_url=settings.kbplus_base_url,
+        api_token=settings.kbplus_api_token,
+        board_id=settings.kbplus_board_id,
+        todo_column_id=settings.kbplus_todo_column_id,
+        done_column_id=settings.kbplus_done_column_id,
+        timeout_seconds=settings.kbplus_timeout_seconds,
+    )
+    assistant = AssistantService(storage=storage, calendar=calendar_service, settings=settings, kbplus=kbplus_client)
     ai_client = OpenAICompatibleAI(
         base_url=settings.backend_base_url,
         api_key=settings.backend_api_key,

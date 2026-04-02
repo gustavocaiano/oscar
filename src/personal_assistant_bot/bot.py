@@ -549,7 +549,18 @@ class PersonalAssistantBot:
         reply_markup = None
         approval: PendingApproval | None = None
 
-        if ai_result.proposed_action:
+        if ai_result.tool_plan:
+            try:
+                approval = self.assistant.create_pending_tool_plan(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    steps=list(ai_result.tool_plan),
+                )
+            except AssistantError as exc:
+                logger.warning("Rejected AI tool plan for chat %s: %s", chat_id, exc)
+                ai_result = AIResponse(reply=ai_result.reply, proposal_error=f"invalid_tool_plan:{exc}")
+
+        if approval is None and ai_result.proposed_action:
             try:
                 approval = self.assistant.create_pending_approval(
                     chat_id=chat_id,
@@ -626,29 +637,41 @@ class PersonalAssistantBot:
                 await update.effective_message.reply_text(f"Created {len(item_ids)} {kind} item(s)")
                 return
             if subcommand == "list":
-                items = self.assistant.list_items(chat_id=chat_id, user_id=user_id, kind=kind, include_done=False)
-                await update.effective_message.reply_text(self._format_list_items(items, singular=singular))
+                if kind == "task":
+                    columns = self.assistant.list_task_columns(chat_id=chat_id, user_id=user_id, include_done=False)
+                    await update.effective_message.reply_text(self._format_task_columns(columns))
+                else:
+                    items = self.assistant.list_items(chat_id=chat_id, user_id=user_id, kind=kind, include_done=False)
+                    await update.effective_message.reply_text(self._format_list_items(items, singular=singular))
                 return
             if subcommand in {"done", "buy"}:
                 if len(context.args) < 2:
                     raise AssistantError(f"Please provide a {singular} id")
+                item_identifier: int | str = context.args[1] if kind == "task" else int(context.args[1])
                 self.assistant.complete_item(
-                    chat_id=chat_id, user_id=user_id, kind=kind, item_id=int(context.args[1])
+                    chat_id=chat_id, user_id=user_id, kind=kind, item_id=item_identifier
                 )
-                await update.effective_message.reply_text(f"Marked {singular} #{int(context.args[1])} complete")
+                item_label = str(item_identifier)
+                if kind == "shopping":
+                    item_label = f"#{item_label}"
+                await update.effective_message.reply_text(f"Marked {singular} {item_label} complete")
                 return
             if subcommand == "rename":
                 if len(context.args) < 2:
                     raise AssistantError(f"Use /{'shop' if kind == 'shopping' else 'task'} rename <id> | <new title>")
                 parts = self._split_pipe(rest, minimum=2)
+                item_identifier = parts[0] if kind == "task" else int(parts[0])
                 self.assistant.rename_item(
                     chat_id=chat_id,
                     user_id=user_id,
                     kind=kind,
-                    item_id=int(parts[0]),
+                    item_id=item_identifier,
                     title=parts[1],
                 )
-                await update.effective_message.reply_text(f"Renamed {singular} #{int(parts[0])}")
+                item_label = str(item_identifier)
+                if kind == "shopping":
+                    item_label = f"#{item_label}"
+                await update.effective_message.reply_text(f"Renamed {singular} {item_label}")
                 return
             raise AssistantError(f"Unknown /{'shop' if kind == 'shopping' else 'task'} subcommand")
         except (AssistantError, ValueError) as exc:
@@ -855,7 +878,7 @@ class PersonalAssistantBot:
 
     def _approval_message(self, approval: PendingApproval) -> str:
         return (
-            "Please confirm this action.\n\n"
+            "Please confirm this request.\n\n"
             f"Proposed action: {approval.prompt_text}\n"
             f"Use the buttons below, or fallback to /confirm {approval.token} / /reject {approval.token}."
         )
@@ -968,7 +991,7 @@ class PersonalAssistantBot:
             if getattr(item, "role", None) != "assistant":
                 continue
             content = str(getattr(item, "content", ""))
-            if content.startswith("Please confirm this action."):
+            if content.startswith("Please confirm this "):
                 continue
             reminder_match = re.search(
                 r'reminder[^\n]*"(?P<message>[^"]+)"[^\d]*(?P<when>\d{4}-\d{2}-\d{2} \d{2}:\d{2})',
@@ -1020,6 +1043,7 @@ class PersonalAssistantBot:
             "/pref show\n"
             "/cancel\n"
             "AI approval buttons are shown automatically; /confirm TOKEN and /reject TOKEN remain as fallback.\n\n"
+            "If KB+ task integration is enabled, /task list groups tasks by KB+ columns and /task rename or /task done use the task ids shown there.\n\n"
             "You can also send a Telegram voice note and, if local speech-to-text is enabled, the assistant will transcribe it and process it like a normal message.\n\n"
             "If you send a normal message, the assistant uses AI chat mode, can inspect your assistant data, and asks before writing changes."
         )
@@ -1098,6 +1122,19 @@ class PersonalAssistantBot:
         lines = [f"Open {singular}s:"]
         for item in items:
             lines.append(f"- #{item.id} {item.title}")
+        return "\n".join(lines)
+
+    def _format_task_columns(self, columns: Iterable[object]) -> str:
+        visible_columns = [column for column in columns if list(getattr(column, "tasks", []))]
+        if not visible_columns:
+            return "No open tasks."
+        lines = ["Open tasks:"]
+        for index, column in enumerate(visible_columns):
+            if index > 0:
+                lines.append("")
+            lines.append(f"{getattr(column, 'name', 'Tasks')}")
+            for task in getattr(column, "tasks", []):
+                lines.append(f"- {getattr(task, 'id', '')} {getattr(task, 'title', '')}")
         return "\n".join(lines)
 
     def _format_notes(self, notes: Iterable[NoteItem]) -> str:

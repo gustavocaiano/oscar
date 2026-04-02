@@ -167,3 +167,39 @@ def test_create_event_uses_icalendar_component_and_closes_client() -> None:
     assert created_event.end == end
     assert created_event.uid == "evt-ical-1"
     assert fake_client.closed is True
+
+
+def test_get_calendar_matches_display_name_case_insensitively(monkeypatch) -> None:
+    class FakeCalendar:
+        def get_display_name(self) -> str:
+            return "Work"
+
+    class FakePrincipal:
+        def calendar(self, *, name: str):
+            raise LookupError(name)
+
+        def get_calendars(self):
+            return [FakeCalendar()]
+
+    class FakeClient:
+        def __init__(self, *, url: str, username: str, password: str) -> None:
+            del url, username, password
+
+        def principal(self):
+            return FakePrincipal()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("personal_assistant_bot.calendar_integration.DAVClient", FakeClient)
+
+    service = CalendarService(
+        url="https://example.test",
+        username="user",
+        password="pass",
+        calendar_name=" work ",
+    )
+
+    _, calendar = service._get_calendar()
+
+    assert calendar.get_display_name() == "Work"

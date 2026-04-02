@@ -134,3 +134,47 @@ def test_confirm_approval_supports_create_calendar_event(tmp_path: Path) -> None
     _, _, summary, description = calendar.create_calls[0]
     assert summary == "Team sync"
     assert description == "Weekly check-in"
+
+
+def test_confirm_approval_supports_multi_action_tool_plan(tmp_path: Path) -> None:
+    service = build_service(tmp_path)
+
+    pending = service.create_pending_tool_plan(
+        chat_id=10,
+        user_id=20,
+        steps=[
+            {"tool": "tasks", "operation": "create_many", "args": {"titles": ["Pay rent", "Send invoice"]}},
+            {
+                "tool": "reminders",
+                "operation": "create",
+                "args": {"when_local": "2026-04-02 09:00", "message": "Call Alice"},
+            },
+        ],
+    )
+
+    result = service.confirm_approval(chat_id=10, user_id=20, token=pending.token)
+
+    assert "Executed 3 planned action(s)." in result
+    assert "Created task" in result
+    assert "Created reminder" in result
+    tasks = service.list_items(chat_id=10, user_id=20, kind="task")
+    assert [task.title for task in tasks] == ["Pay rent", "Send invoice"]
+    reminders = service.list_reminders(chat_id=10, user_id=20, pending_only=False)
+    assert [item.message for item in reminders] == ["Call Alice"]
+
+
+def test_tool_plan_with_no_success_stays_pending(tmp_path: Path) -> None:
+    service = build_service(tmp_path)
+
+    pending = service.create_pending_tool_plan(
+        chat_id=10,
+        user_id=20,
+        steps=[{"tool": "tasks", "operation": "complete", "args": {"id": 999}}],
+    )
+
+    with pytest.raises(AssistantError):
+        service.confirm_approval(chat_id=10, user_id=20, token=pending.token)
+
+    approval = service.storage.get_approval(token=pending.token, user_id=20, chat_id=10)
+    assert approval is not None
+    assert approval.status == "pending"

@@ -8,6 +8,7 @@ from pathlib import Path
 from personal_assistant_bot.ai import AIResponse
 from personal_assistant_bot.bot import PersonalAssistantBot
 from personal_assistant_bot.config import Settings
+from personal_assistant_bot.kbplus_integration import KbplusColumn, KbplusTask
 from personal_assistant_bot.services import PendingApproval
 from personal_assistant_bot.speech import TranscriptionResult
 
@@ -121,10 +122,32 @@ class FakeAssistant:
     def get_tool_snapshot(self, *, chat_id: int, user_id: int):
         return {"tasks": [], "shopping": []}
 
+    def list_task_columns(self, *, chat_id: int, user_id: int, include_done: bool = False):
+        del chat_id, user_id, include_done
+        return [
+            KbplusColumn(
+                id="todo",
+                name="Todo",
+                is_done=False,
+                tasks=[KbplusTask(id="tsk_1", title="Buy apples", description=None, column_id="todo", column_name="Todo")],
+            ),
+            KbplusColumn(
+                id="doing",
+                name="Doing",
+                is_done=False,
+                tasks=[KbplusTask(id="tsk_2", title="Call bank", description=None, column_id="doing", column_name="Doing")],
+            ),
+        ]
+
     def create_pending_approval(self, *, chat_id: int, user_id: int, action_type: str, payload: dict, prompt_text: str):
         del chat_id, user_id
         self.pending_calls.append({"action_type": action_type, "payload": payload, "prompt_text": prompt_text})
         return PendingApproval(token="abc123", prompt_text=prompt_text or "Auto prompt", expires_at="2026-04-01T12:00:00+00:00")
+
+    def create_pending_tool_plan(self, *, chat_id: int, user_id: int, steps: list[dict], prompt_text: str = ""):
+        del chat_id, user_id, prompt_text
+        self.pending_calls.append({"action_type": "tool_plan", "payload": {"steps": steps}, "prompt_text": "2 planned actions"})
+        return PendingApproval(token="abc123", prompt_text="2 planned actions", expires_at="2026-04-01T12:00:00+00:00")
 
     def parse_flexible_local_datetime(self, *, chat_id: int, user_id: int, raw_text: str):
         del chat_id, user_id
@@ -163,12 +186,25 @@ class FakeAIClient:
         del history, tool_snapshot
         return AIResponse(
             reply=f"I can do that for: {user_message}",
-            proposed_action={
-                "action_type": "create_task",
-                "payload": {"title": "Buy apples"},
-                "label": "Add task Buy apples",
-            },
+            tool_plan=[
+                {"tool": "tasks", "operation": "create", "args": {"title": "Buy apples"}},
+                {"tool": "tasks", "operation": "create", "args": {"title": "Buy pears"}},
+            ],
         )
+
+
+def test_task_handler_lists_grouped_columns(tmp_path: Path) -> None:
+    assistant = FakeAssistant()
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path), assistant=assistant, ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
+    )
+    message = FakeMessage(text="")
+    update = FakeUpdate(effective_message=message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+    context = FakeContext(bot=FakeBot(), args=["list"])
+
+    asyncio.run(bot.task_handler(update, context))
+
+    assert message.replies[0]["text"] == "Open tasks:\nTodo\n- tsk_1 Buy apples\n\nDoing\n- tsk_2 Call bank"
 
 
 class FakeSpeechToText:
@@ -196,8 +232,8 @@ def test_chat_handler_sends_inline_approval_buttons(tmp_path: Path) -> None:
     assert len(message.replies) == 1
     reply = message.replies[0]
     assert "I can do that for:" not in reply["text"]
-    assert reply["text"].startswith("Please confirm this action.")
-    assert "Proposed action: Add task Buy apples" in reply["text"]
+    assert reply["text"].startswith("Please confirm this request.")
+    assert "Proposed action: 2 planned actions" in reply["text"]
     markup = reply["reply_markup"]
     assert markup is not None
     first_row = markup.inline_keyboard[0]
@@ -303,7 +339,7 @@ def test_reminder_add_interactive_flow_creates_pending_approval(tmp_path: Path) 
 
     assert assistant.pending_calls[-1]["action_type"] == "create_reminder"
     assert assistant.pending_calls[-1]["payload"] == {"when_local": "2026-04-02 09:30", "message": "Call mom"}
-    assert when_step.replies[0]["text"].startswith("Please confirm this action.")
+    assert when_step.replies[0]["text"].startswith("Please confirm this request.")
 
 
 def test_calendar_tomorrow_formats_window_and_event_list(tmp_path: Path) -> None:
@@ -324,3 +360,17 @@ def test_calendar_tomorrow_formats_window_and_event_list(tmp_path: Path) -> None
     assert (end_local - start_local).days == 1
     assert message.replies[0]["text"].startswith("Tomorrow:")
     assert "Standup" in message.replies[0]["text"]
+
+
+def test_recover_approval_from_history_ignores_confirmation_prompts(tmp_path: Path) -> None:
+    assistant = FakeAssistant()
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path), assistant=assistant, ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
+    )
+
+    history = [type("Msg", (), {"role": "assistant", "content": "Please confirm this request.\n\nProposed action: ..."})]
+
+    recovered = bot._recover_approval_from_history(chat_id=10, user_id=20, history=history)
+
+    assert recovered is None
+    assert assistant.pending_calls == []
