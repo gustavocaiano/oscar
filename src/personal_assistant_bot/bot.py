@@ -623,8 +623,11 @@ class PersonalAssistantBot:
         singular = "task" if kind == "task" else "shopping item"
         if not context.args:
             action_word = "buy" if kind == "shopping" else "done"
+            identifier_hint = "<id>"
+            if kind == "task":
+                identifier_hint = "<number-or-id>"
             await update.effective_message.reply_text(
-                f"Use /{'shop' if kind == 'shopping' else 'task'} add <text>, /{'shop' if kind == 'shopping' else 'task'} list, /{'shop' if kind == 'shopping' else 'task'} {action_word} <id>, or /{'shop' if kind == 'shopping' else 'task'} rename <id> | <new title>."
+                f"Use /{'shop' if kind == 'shopping' else 'task'} add <text>, /{'shop' if kind == 'shopping' else 'task'} list, /{'shop' if kind == 'shopping' else 'task'} {action_word} {identifier_hint}, or /{'shop' if kind == 'shopping' else 'task'} rename {identifier_hint} | <new title>."
             )
             return
 
@@ -646,21 +649,35 @@ class PersonalAssistantBot:
                 return
             if subcommand in {"done", "buy"}:
                 if len(context.args) < 2:
+                    if kind == "task":
+                        raise AssistantError("Please provide a task number or id")
                     raise AssistantError(f"Please provide a {singular} id")
-                item_identifier: int | str = context.args[1] if kind == "task" else int(context.args[1])
+                raw_reference = context.args[1]
+                item_identifier: int | str = (
+                    self._resolve_task_reference(chat_id=chat_id, user_id=user_id, raw_reference=raw_reference)
+                    if kind == "task"
+                    else int(raw_reference)
+                )
                 self.assistant.complete_item(
                     chat_id=chat_id, user_id=user_id, kind=kind, item_id=item_identifier
                 )
-                item_label = str(item_identifier)
+                item_label = raw_reference if kind == "task" else str(item_identifier)
                 if kind == "shopping":
                     item_label = f"#{item_label}"
                 await update.effective_message.reply_text(f"Marked {singular} {item_label} complete")
                 return
             if subcommand == "rename":
                 if len(context.args) < 2:
-                    raise AssistantError(f"Use /{'shop' if kind == 'shopping' else 'task'} rename <id> | <new title>")
+                    raise AssistantError(
+                        f"Use /{'shop' if kind == 'shopping' else 'task'} rename {'<number-or-id>' if kind == 'task' else '<id>'} | <new title>"
+                    )
                 parts = self._split_pipe(rest, minimum=2)
-                item_identifier = parts[0] if kind == "task" else int(parts[0])
+                raw_reference = parts[0]
+                item_identifier = (
+                    self._resolve_task_reference(chat_id=chat_id, user_id=user_id, raw_reference=raw_reference)
+                    if kind == "task"
+                    else int(raw_reference)
+                )
                 self.assistant.rename_item(
                     chat_id=chat_id,
                     user_id=user_id,
@@ -668,7 +685,7 @@ class PersonalAssistantBot:
                     item_id=item_identifier,
                     title=parts[1],
                 )
-                item_label = str(item_identifier)
+                item_label = raw_reference if kind == "task" else str(item_identifier)
                 if kind == "shopping":
                     item_label = f"#{item_label}"
                 await update.effective_message.reply_text(f"Renamed {singular} {item_label}")
@@ -1043,7 +1060,7 @@ class PersonalAssistantBot:
             "/pref show\n"
             "/cancel\n"
             "AI approval buttons are shown automatically; /confirm TOKEN and /reject TOKEN remain as fallback.\n\n"
-            "If KB+ task integration is enabled, /task list groups tasks by KB+ columns and /task rename or /task done use the task ids shown there.\n\n"
+            "/task list shows numbered tasks. Use those numbers with /task rename or /task done. If KB+ is enabled, tasks stay grouped by KB+ columns and non-numeric raw task ids still work for compatibility.\n\n"
             "You can also send a Telegram voice note and, if local speech-to-text is enabled, the assistant will transcribe it and process it like a normal message.\n\n"
             "If you send a normal message, the assistant uses AI chat mode, can inspect your assistant data, and asks before writing changes."
         )
@@ -1129,13 +1146,36 @@ class PersonalAssistantBot:
         if not visible_columns:
             return "No open tasks."
         lines = ["Open tasks:"]
+        task_number = 1
         for index, column in enumerate(visible_columns):
             if index > 0:
                 lines.append("")
             lines.append(f"{getattr(column, 'name', 'Tasks')}")
             for task in getattr(column, "tasks", []):
-                lines.append(f"- {getattr(task, 'id', '')} {getattr(task, 'title', '')}")
+                lines.append(f"- {task_number}. {getattr(task, 'title', '')}")
+                task_number += 1
         return "\n".join(lines)
+
+    def _resolve_task_reference(self, *, chat_id: int, user_id: int, raw_reference: str) -> str:
+        reference = raw_reference.strip()
+        if not reference:
+            raise AssistantError("Please provide a task number or id")
+        if not reference.isdigit():
+            return reference
+
+        task_number = int(reference)
+        if task_number <= 0:
+            raise AssistantError("Task number must be positive")
+
+        columns = self.assistant.list_task_columns(chat_id=chat_id, user_id=user_id, include_done=False)
+        ordered_tasks = [task for column in columns for task in getattr(column, "tasks", [])]
+        if task_number > len(ordered_tasks):
+            raise AssistantError(f"Task number {task_number} is not in the current open task list")
+
+        task_id = str(getattr(ordered_tasks[task_number - 1], "id", "")).strip()
+        if not task_id:
+            raise AssistantError(f"Task number {task_number} could not be resolved")
+        return task_id
 
     def _format_notes(self, notes: Iterable[NoteItem]) -> str:
         notes = list(notes)

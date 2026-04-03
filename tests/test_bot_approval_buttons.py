@@ -108,6 +108,9 @@ class FakeAssistant:
         self.reject_calls: list[tuple[int, int, str]] = []
         self.pending_calls: list[dict[str, object]] = []
         self.between_calls: list[tuple[datetime, datetime]] = []
+        self.completed_calls: list[tuple[int, int, str, str | int]] = []
+        self.renamed_calls: list[tuple[int, int, str, str | int, str]] = []
+        self.kbplus = type("Kbplus", (), {"configured": True})()
 
     def ensure_chat(self, *, chat_id: int, user_id: int):
         del chat_id, user_id
@@ -172,11 +175,17 @@ class FakeAssistant:
 
     def confirm_approval(self, *, chat_id: int, user_id: int, token: str) -> str:
         self.confirm_calls.append((chat_id, user_id, token))
-        return "Created task #1"
+        return "Created task."
 
     def reject_approval(self, *, chat_id: int, user_id: int, token: str) -> str:
         self.reject_calls.append((chat_id, user_id, token))
         return "Rejected pending action abc123"
+
+    def complete_item(self, *, chat_id: int, user_id: int, kind: str, item_id: str | int) -> None:
+        self.completed_calls.append((chat_id, user_id, kind, item_id))
+
+    def rename_item(self, *, chat_id: int, user_id: int, kind: str, item_id: str | int, title: str) -> None:
+        self.renamed_calls.append((chat_id, user_id, kind, item_id, title))
 
 
 class FakeAIClient:
@@ -204,7 +213,80 @@ def test_task_handler_lists_grouped_columns(tmp_path: Path) -> None:
 
     asyncio.run(bot.task_handler(update, context))
 
-    assert message.replies[0]["text"] == "Open tasks:\nTodo\n- tsk_1 Buy apples\n\nDoing\n- tsk_2 Call bank"
+    assert message.replies[0]["text"] == "Open tasks:\nTodo\n- 1. Buy apples\n\nDoing\n- 2. Call bank"
+
+
+def test_task_done_resolves_numeric_reference_for_kbplus(tmp_path: Path) -> None:
+    assistant = FakeAssistant()
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path), assistant=assistant, ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
+    )
+    message = FakeMessage(text="")
+    update = FakeUpdate(effective_message=message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+
+    asyncio.run(bot.task_handler(update, FakeContext(bot=FakeBot(), args=["done", "2"])))
+
+    assert assistant.completed_calls == [(10, 20, "task", "tsk_2")]
+    assert message.replies[0]["text"] == "Marked task 2 complete"
+
+
+def test_task_done_resolves_numeric_reference_for_local_tasks(tmp_path: Path) -> None:
+    assistant = FakeAssistant()
+    assistant.kbplus = None
+
+    def local_columns(*, chat_id: int, user_id: int, include_done: bool = False):
+        del chat_id, user_id, include_done
+        return [
+            KbplusColumn(
+                id="local-open",
+                name="Open tasks",
+                is_done=False,
+                tasks=[
+                    KbplusTask(id="41", title="Buy apples", description=None, column_id="local-open", column_name="Open tasks"),
+                    KbplusTask(id="77", title="Call bank", description=None, column_id="local-open", column_name="Open tasks"),
+                ],
+            )
+        ]
+
+    assistant.list_task_columns = local_columns
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path), assistant=assistant, ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
+    )
+    message = FakeMessage(text="")
+    update = FakeUpdate(effective_message=message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+
+    asyncio.run(bot.task_handler(update, FakeContext(bot=FakeBot(), args=["done", "2"])))
+
+    assert assistant.completed_calls == [(10, 20, "task", "77")]
+    assert message.replies[0]["text"] == "Marked task 2 complete"
+
+
+def test_task_rename_resolves_numeric_reference_for_kbplus(tmp_path: Path) -> None:
+    assistant = FakeAssistant()
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path), assistant=assistant, ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
+    )
+    message = FakeMessage(text="")
+    update = FakeUpdate(effective_message=message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+
+    asyncio.run(bot.task_handler(update, FakeContext(bot=FakeBot(), args=["rename", "1", "|", "Buy green apples"])))
+
+    assert assistant.renamed_calls == [(10, 20, "task", "tsk_1", "Buy green apples")]
+    assert message.replies[0]["text"] == "Renamed task 1"
+
+
+def test_task_done_keeps_raw_non_numeric_identifier_compatible(tmp_path: Path) -> None:
+    assistant = FakeAssistant()
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path), assistant=assistant, ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
+    )
+    message = FakeMessage(text="")
+    update = FakeUpdate(effective_message=message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+
+    asyncio.run(bot.task_handler(update, FakeContext(bot=FakeBot(), args=["done", "tsk_2"])))
+
+    assert assistant.completed_calls == [(10, 20, "task", "tsk_2")]
+    assert message.replies[0]["text"] == "Marked task tsk_2 complete"
 
 
 class FakeSpeechToText:
@@ -258,7 +340,7 @@ def test_approval_callback_handler_confirms_action(tmp_path: Path) -> None:
 
     assert assistant.confirm_calls == [(10, 20, "abc123")]
     assert query.answers[0]["text"] == "Action processed."
-    assert query.edits == ["✅ Approved — Created task #1"]
+    assert query.edits == ["✅ Approved — Created task."]
 
 
 def test_approval_callback_handler_rejects_action(tmp_path: Path) -> None:

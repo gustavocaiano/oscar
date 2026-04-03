@@ -844,7 +844,9 @@ class AssistantService:
         if action_type == "create_task":
             title = str(payload.get("title", "")).strip()
             item_ids = self.create_items(chat_id=chat_id, user_id=user_id, kind="task", titles=[title])
-            return f"Created task {item_ids[0]}"
+            if self._kbplus_enabled():
+                return "Created task."
+            return f"Created task #{item_ids[0]}"
         if action_type == "add_shopping_items":
             items = [str(item).strip() for item in payload.get("items", []) if str(item).strip()]
             item_ids = self.create_items(chat_id=chat_id, user_id=user_id, kind="shopping", titles=items)
@@ -892,6 +894,8 @@ class AssistantService:
                 title=str(payload.get("title", "")).strip(),
             )
             label = "shopping item" if payload["kind"] == "shopping" else "task"
+            if payload["kind"] == "task":
+                return "Renamed task."
             return f"Renamed {label} {payload['item_id']}"
         if action_type == "complete_list_item":
             item_id = payload.get("item_id")
@@ -902,6 +906,8 @@ class AssistantService:
                 item_id=item_id,
             )
             label = "shopping item" if payload["kind"] == "shopping" else "task"
+            if payload["kind"] == "task":
+                return "Marked task complete."
             return f"Marked {label} {payload['item_id']} complete"
         if action_type == "update_reminder_status":
             self.update_reminder(

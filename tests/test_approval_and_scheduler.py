@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from personal_assistant_bot.config import Settings
+from personal_assistant_bot.kbplus_integration import KbplusColumn, KbplusTask
 import pytest
 
 from personal_assistant_bot.services import AssistantError, AssistantService
@@ -24,6 +25,45 @@ class FakeCalendarService:
         if self.create_calls is not None:
             self.create_calls.append((start, end, summary, description))
         return type("Event", (), {"summary": summary, "start": start, "end": end, "uid": "evt-1"})
+
+
+class FakeKbplusClient:
+    configured = True
+
+    def __init__(self) -> None:
+        self.created_ids: list[str] = []
+
+    def list_columns(self, *, include_done: bool = False):
+        del include_done
+        return [
+            KbplusColumn(
+                id="todo",
+                name="Todo",
+                is_done=False,
+                tasks=[
+                    KbplusTask(
+                        id=task_id,
+                        title=f"Task {index + 1}",
+                        description=None,
+                        column_id="todo",
+                        column_name="Todo",
+                    )
+                    for index, task_id in enumerate(self.created_ids)
+                ],
+            )
+        ]
+
+    def create_task(self, *, title: str, description: str | None = None):
+        del title, description
+        task_id = f"remote-{len(self.created_ids) + 1}"
+        self.created_ids.append(task_id)
+        return type("TaskLink", (), {"task_id": task_id})
+
+    def rename_task(self, *, task_id: str, title: str) -> None:
+        del task_id, title
+
+    def complete_task(self, *, task_id: str) -> None:
+        del task_id
 
 
 def build_settings(tmp_path: Path) -> Settings:
@@ -161,6 +201,30 @@ def test_confirm_approval_supports_multi_action_tool_plan(tmp_path: Path) -> Non
     assert [task.title for task in tasks] == ["Pay rent", "Send invoice"]
     reminders = service.list_reminders(chat_id=10, user_id=20, pending_only=False)
     assert [item.message for item in reminders] == ["Call Alice"]
+
+
+def test_confirm_approval_hides_kbplus_task_id_in_result(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    storage = SQLiteStorage(settings.database_path)
+    service = AssistantService(
+        storage=storage,
+        calendar=FakeCalendarService(),
+        settings=settings,
+        kbplus=FakeKbplusClient(),
+    )
+
+    pending = service.create_pending_approval(
+        chat_id=10,
+        user_id=20,
+        action_type="create_task",
+        payload={"title": "Buy apples"},
+        prompt_text="Add task Buy apples",
+    )
+
+    result = service.confirm_approval(chat_id=10, user_id=20, token=pending.token)
+
+    assert result == "Created task."
+    assert "remote-" not in result
 
 
 def test_tool_plan_with_no_success_stays_pending(tmp_path: Path) -> None:
