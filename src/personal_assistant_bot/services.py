@@ -294,6 +294,11 @@ class AssistantService:
         self.ensure_chat(chat_id=chat_id, user_id=user_id)
         return self.storage.list_notes(user_id=user_id, chat_id=chat_id, kind=kind, limit=limit, query=query)
 
+    def remove_note(self, *, chat_id: int, user_id: int, note_id: int) -> bool:
+        """Remove a note by ID. Returns True if deleted, False if not found."""
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        return self.storage.delete_note(note_id=note_id, user_id=user_id, chat_id=chat_id)
+
     def create_reminder(self, *, chat_id: int, user_id: int, due_text: str, message: str) -> int:
         if not message.strip():
             raise AssistantError("Please provide reminder text")

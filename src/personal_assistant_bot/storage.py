@@ -516,6 +516,15 @@ class SQLiteStorage:
             for row in rows
         ]
 
+    def delete_note(self, *, note_id: int, user_id: int, chat_id: int) -> bool:
+        """Delete a note by ID. Returns True if deleted, False if not found."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM notes WHERE id = ? AND user_id = ? AND chat_id = ? RETURNING id",
+                (note_id, user_id, chat_id),
+            )
+            return cursor.fetchone() is not None
+
     def create_reminder(self, *, user_id: int, chat_id: int, message: str, due_at: str) -> int:
         now = self._now()
         with self._connect() as connection:

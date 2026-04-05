@@ -155,6 +155,16 @@ class PersonalAssistantBot:
                 notes = self.assistant.list_notes(chat_id=chat_id, user_id=user_id, limit=10, query=" ".join(rest))
                 await update.effective_message.reply_text(self._format_notes(notes))
                 return
+            if subcommand == "delete":
+                if not rest:
+                    raise AssistantError("Please provide a note ID to delete")
+                note_id = int(rest[0])
+                deleted = self.assistant.remove_note(chat_id=chat_id, user_id=user_id, note_id=note_id)
+                if deleted:
+                    await update.effective_message.reply_text(f"Note #{note_id} deleted")
+                else:
+                    await update.effective_message.reply_text(f"Note #{note_id} not found")
+                return
             raise AssistantError("Unknown /note subcommand")
         except (AssistantError, ValueError) as exc:
             await update.effective_message.reply_text(str(exc))

@@ -82,15 +82,16 @@ class OpenAICompatibleAI:
             "type": "function",
             "function": {
                 "name": "notes",
-                "description": "Plan note or inbox capture actions.",
+                "description": "Manage notes and inbox items. Use create to add new notes/inbox items, use delete to remove existing items by ID.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["create"]},
-                        "kind": {"type": "string", "enum": ["note", "inbox"]},
-                        "content": {"type": "string"},
+                        "operation": {"type": "string", "enum": ["create", "delete"]},
+                        "note_id": {"type": "integer", "description": "The note ID to delete. Required when operation is 'delete'."},
+                        "kind": {"type": "string", "enum": ["note", "inbox"], "description": "Type of note. Required when operation is 'create'."},
+                        "content": {"type": "string", "description": "Note content. Required when operation is 'create'."},
                     },
-                    "required": ["operation", "content"],
+                    "required": ["operation"],
                     "additionalProperties": False,
                 },
             },
