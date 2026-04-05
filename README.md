@@ -231,6 +231,13 @@ python -m playwright install chromium
 
 Without that step, web-search tool calls will fail at runtime.
 
+If you run the bot via Docker, the provided `Dockerfile` now installs Chromium during the image build. Rebuild the image after pulling the change:
+
+```bash
+docker compose build assistant
+docker compose up -d assistant
+```
+
 ## Local speech-to-text setup
 
 The bot can transcribe Telegram **voice notes** locally on the server.
