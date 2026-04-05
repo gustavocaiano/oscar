@@ -132,7 +132,7 @@ class PersonalAssistantBot:
         chat_id, user_id = self._chat_and_user(update)
         if not context.args:
             await update.effective_message.reply_text(
-                "Use /note add <text>, /note inbox <text>, /note list [count], or /note search <query>."
+                "Use /note add <text>, /note inbox <text>, /note list [count], /note search <query>, or /note delete <id>."
             )
             return
         subcommand = context.args[0].lower()
