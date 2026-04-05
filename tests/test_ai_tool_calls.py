@@ -6,11 +6,47 @@ from personal_assistant_bot.ai import OpenAICompatibleAI
 
 
 class FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
     def raise_for_status(self) -> None:
         return None
 
     def json(self):
-        return {
+        return self._payload
+
+
+class FakeAsyncClient:
+    responses = []
+    seen_payloads = []
+
+    def __init__(self, *, timeout: float):
+        self.timeout = timeout
+
+    async def __aenter__(self):
+        type(self).seen_payloads = []
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def post(self, url: str, *, json, headers):
+        assert url.endswith("/chat/completions")
+        if "tools" in json:
+            assert json["parallel_tool_calls"] is True
+            assert json["tool_choice"] == "auto"
+            assert json["tools"]
+        else:
+            assert json["tool_choice"] == "none"
+        assert headers["Authorization"].startswith("Bearer ")
+        type(self).seen_payloads.append(json)
+        return FakeResponse(type(self).responses.pop(0))
+
+
+def test_ai_client_parses_multi_tool_plan(monkeypatch) -> None:
+    monkeypatch.setattr("personal_assistant_bot.ai.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [
+        {
             "choices": [
                 {
                     "message": {
@@ -35,29 +71,7 @@ class FakeResponse:
                 }
             ]
         }
-
-
-class FakeAsyncClient:
-    def __init__(self, *, timeout: float):
-        self.timeout = timeout
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return None
-
-    async def post(self, url: str, *, json, headers):
-        assert url.endswith("/chat/completions")
-        assert json["parallel_tool_calls"] is True
-        assert json["tool_choice"] == "auto"
-        assert json["tools"]
-        assert headers["Authorization"].startswith("Bearer ")
-        return FakeResponse()
-
-
-def test_ai_client_parses_multi_tool_plan(monkeypatch) -> None:
-    monkeypatch.setattr("personal_assistant_bot.ai.httpx.AsyncClient", FakeAsyncClient)
+    ]
 
     client = OpenAICompatibleAI(
         base_url="https://example.test/v1",
@@ -77,3 +91,77 @@ def test_ai_client_parses_multi_tool_plan(monkeypatch) -> None:
         },
     ]
     assert result.reply == "I'll prepare that for confirmation."
+
+
+def test_ai_client_executes_web_search_then_answers(monkeypatch) -> None:
+    monkeypatch.setattr("personal_assistant_bot.ai.httpx.AsyncClient", FakeAsyncClient)
+
+    async def fake_execute_read_only_tool_call(self, tool_call):
+        assert tool_call["name"] == "web_search"
+        assert tool_call["arguments"] == {
+            "operation": "search",
+            "query": "latest Portugal inflation",
+        }
+        return (
+            "Search query: latest Portugal inflation\n"
+            "Results:\n"
+            "1. Portugal inflation slows\n"
+            "   URL: https://example.test/news\n"
+            "   Snippet: Inflation slowed this month."
+        )
+
+    monkeypatch.setattr(
+        OpenAICompatibleAI,
+        "_execute_read_only_tool_call",
+        fake_execute_read_only_tool_call,
+    )
+
+    FakeAsyncClient.responses = [
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_web_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"operation":"search","query":"latest Portugal inflation"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "Portugal inflation slowed this month according to recent reporting.",
+                    }
+                }
+            ]
+        },
+    ]
+
+    client = OpenAICompatibleAI(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        model="gpt-test",
+        timeout_seconds=5.0,
+    )
+
+    result = asyncio.run(client.respond(user_message="what is the latest Portugal inflation", history=[], tool_snapshot={}))
+
+    assert result.reply == "Portugal inflation slowed this month according to recent reporting."
+    assert result.tool_plan is None
+    assert len(FakeAsyncClient.seen_payloads) == 2
+    second_messages = FakeAsyncClient.seen_payloads[1]["messages"]
+    assert "tools" not in FakeAsyncClient.seen_payloads[1]
+    assert second_messages[-2]["role"] == "assistant"
+    assert second_messages[-2]["tool_calls"][0]["function"]["name"] == "web_search"
+    assert second_messages[-1]["role"] == "tool"
+    assert "Portugal inflation slows" in second_messages[-1]["content"]

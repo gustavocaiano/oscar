@@ -219,6 +219,18 @@ Example with CLIProxyAPI + Codex-style flow:
 
 If you use another backend, just point `BACKEND_BASE_URL`, `BACKEND_API_KEY`, and `BACKEND_MODEL` to it.
 
+## Local web search setup
+
+The AI can use a local `web_search` tool for read-only current-information queries.
+
+After installing Python dependencies, install the local Chromium browser used by Playwright:
+
+```bash
+python -m playwright install chromium
+```
+
+Without that step, web-search tool calls will fail at runtime.
+
 ## Local speech-to-text setup
 
 The bot can transcribe Telegram **voice notes** locally on the server.

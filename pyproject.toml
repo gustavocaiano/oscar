@@ -14,6 +14,7 @@ dependencies = [
   "faster-whisper>=1.1,<2",
   "httpx>=0.27,<0.29",
   "python-telegram-bot[job-queue]>=21.6,<22",
+  "playwright>=1.40,<2",
 ]
 
 [project.optional-dependencies]

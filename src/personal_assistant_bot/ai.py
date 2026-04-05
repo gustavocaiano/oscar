@@ -33,7 +33,9 @@ class OpenAICompatibleAI:
         "create_reminder",
         "create_calendar_event",
     }
-    SUPPORTED_TOOLS = {"tasks", "shopping", "notes", "reminders", "calendar"}
+    READ_ONLY_TOOLS = {"web_search"}
+    MAX_TOOL_ROUNDS = 3
+    SUPPORTED_TOOLS = {"tasks", "shopping", "notes", "reminders", "calendar", "web_search"}
 
     PROPOSAL_TOOLS: list[dict[str, Any]] = [
         {
@@ -142,6 +144,22 @@ class OpenAICompatibleAI:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the internet for current information on any topic. This is read-only and runs immediately without confirmation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["search"]},
+                        "query": {"type": "string", "description": "The search query to find information on the web"},
+                    },
+                    "required": ["operation", "query"],
+                    "additionalProperties": False,
+                },
+            },
+        },
     ]
 
     def __init__(self, *, base_url: str | None, api_key: str | None, model: str | None, timeout_seconds: float):
@@ -173,8 +191,10 @@ class OpenAICompatibleAI:
                     "You may call multiple tools in one response. The app will ask the user to confirm before any write happens, so never say a write already happened. "
                     "For write intents, do exactly one of these: ask one short follow-up question if required fields are missing or ambiguous; OR call one or more tools. "
                     "Prefer the snapshot for read queries instead of function tools. "
+                    "The web_search tool is read-only, runs immediately without confirmation, and must use operation='search'. Do not mix web_search with write tools in the same response. After receiving web_search results, answer the user directly. "
                     "When creating reminders or calendar events, every local date/time must use exact format YYYY-MM-DD HH:MM. "
-                    "Task ids in the snapshot may be opaque strings from KB+; when renaming or completing tasks, copy the task id exactly as shown."
+                    "Task ids in the snapshot may be opaque strings from KB+; when renaming or completing tasks, copy the task id exactly as shown. "
+                    "If the user asks for current information, news, or facts you don't have, use the web_search tool to find the answer."
                 ),
             },
             {
@@ -189,14 +209,6 @@ class OpenAICompatibleAI:
         if not history or history[-1].role != "user" or history[-1].content != user_message:
             prompt_messages.append({"role": "user", "content": user_message})
 
-        payload = {
-            "model": self.model,
-            "messages": prompt_messages,
-            "temperature": 0.2,
-            "tools": self.PROPOSAL_TOOLS,
-            "tool_choice": "auto",
-            "parallel_tool_calls": True,
-        }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -204,21 +216,70 @@ class OpenAICompatibleAI:
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
+                allow_tools = True
+                for _ in range(self.MAX_TOOL_ROUNDS):
+                    data = await self._request_completion(
+                        client=client,
+                        messages=prompt_messages,
+                        headers=headers,
+                        allow_tools=allow_tools,
+                    )
+                    message_payload = self._extract_message(data)
+                    content = self._extract_content(message_payload)
+                    tool_calls, tool_error = self._extract_tool_calls(message_payload)
+                    if tool_calls is None:
+                        return self._build_standard_response(content=content, tool_error=tool_error)
+
+                    if any(not self._is_read_only_tool_call(call) for call in tool_calls):
+                        tool_plan, tool_error = self._tool_calls_to_plan(tool_calls)
+                        if tool_plan is not None:
+                            reply = content.strip() or "I prepared a request for confirmation."
+                            return AIResponse(reply=reply, tool_plan=tool_plan, proposal_error=tool_error)
+                        return AIResponse(
+                            reply=content.strip() or "I could not generate a response.",
+                            proposal_error=tool_error,
+                        )
+
+                    prompt_messages.extend(
+                        await self._build_read_only_followup_messages(
+                            message_payload=message_payload,
+                            tool_calls=tool_calls,
+                        )
+                    )
+                    allow_tools = False
+                return AIResponse(
+                    reply="I could not complete the web search flow.",
+                    proposal_error="tool_round_limit",
+                )
         except httpx.TimeoutException as exc:
             raise AIBackendError("The AI backend timed out") from exc
         except httpx.HTTPError as exc:
             raise AIBackendError(f"The AI backend request failed: {exc}") from exc
 
-        message_payload = self._extract_message(data)
-        content = self._extract_content(message_payload)
-        tool_plan, tool_error = self._extract_tool_plan(message_payload)
-        if tool_plan is not None:
-            reply = content.strip() or "I prepared a request for confirmation."
-            return AIResponse(reply=reply, tool_plan=tool_plan, proposal_error=tool_error)
+    async def _request_completion(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        messages: list[dict[str, Any]],
+        headers: dict[str, str],
+        allow_tools: bool,
+    ) -> dict[str, Any]:
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.2,
+        }
+        if allow_tools:
+            payload["tools"] = self.PROPOSAL_TOOLS
+            payload["tool_choice"] = "auto"
+            payload["parallel_tool_calls"] = True
+        else:
+            payload["tool_choice"] = "none"
+        response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()
 
+    def _build_standard_response(self, *, content: str, tool_error: str | None) -> AIResponse:
         parsed = self._parse_json(content)
         if parsed is None:
             return AIResponse(
@@ -260,15 +321,15 @@ class OpenAICompatibleAI:
             return "\n".join(parts)
         return ""
 
-    def _extract_tool_plan(self, message_payload: dict[str, Any]) -> tuple[list[dict[str, Any]] | None, str | None]:
+    def _extract_tool_calls(self, message_payload: dict[str, Any]) -> tuple[list[dict[str, Any]] | None, str | None]:
         tool_calls = message_payload.get("tool_calls")
         if tool_calls is None:
             return None, None
         if not isinstance(tool_calls, list) or not tool_calls:
             return None, "invalid_tool_calls"
 
-        steps: list[dict[str, Any]] = []
-        for raw_call in tool_calls:
+        normalized_calls: list[dict[str, Any]] = []
+        for index, raw_call in enumerate(tool_calls, start=1):
             if not isinstance(raw_call, dict):
                 return None, "invalid_tool_call_entry"
             if raw_call.get("type") != "function":
@@ -288,6 +349,23 @@ class OpenAICompatibleAI:
                 return None, f"invalid_tool_arguments:{name}"
             if not isinstance(arguments, dict):
                 return None, f"invalid_tool_arguments:{name}"
+            normalized_calls.append(
+                {
+                    "id": str(raw_call.get("id") or f"call_{index}"),
+                    "name": name,
+                    "arguments": arguments,
+                }
+            )
+        return normalized_calls, None
+
+    def _tool_calls_to_plan(self, tool_calls: list[dict[str, Any]]) -> tuple[list[dict[str, Any]] | None, str | None]:
+        if any(self._is_read_only_tool_call(call) for call in tool_calls):
+            return None, "mixed_read_write_tools"
+
+        steps: list[dict[str, Any]] = []
+        for call in tool_calls:
+            name = str(call.get("name") or "").strip()
+            arguments = dict(call.get("arguments") or {})
             operation = str(arguments.get("operation") or "").strip()
             if not operation:
                 return None, f"missing_operation:{name}"
@@ -295,6 +373,62 @@ class OpenAICompatibleAI:
             step_args.pop("operation", None)
             steps.append({"tool": name, "operation": operation, "args": step_args})
         return steps, None
+
+    def _is_read_only_tool_call(self, tool_call: dict[str, Any]) -> bool:
+        return str(tool_call.get("name") or "").strip() in self.READ_ONLY_TOOLS
+
+    async def _build_read_only_followup_messages(
+        self,
+        *,
+        message_payload: dict[str, Any],
+        tool_calls: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        assistant_message = {
+            "role": "assistant",
+            "content": self._extract_content(message_payload),
+            "tool_calls": [
+                {
+                    "id": str(call["id"]),
+                    "type": "function",
+                    "function": {
+                        "name": str(call["name"]),
+                        "arguments": json.dumps(call["arguments"], ensure_ascii=False),
+                    },
+                }
+                for call in tool_calls
+            ],
+        }
+        messages: list[dict[str, Any]] = [assistant_message]
+        for call in tool_calls:
+            tool_output = await self._execute_read_only_tool_call(call)
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(call["id"]),
+                    "content": tool_output,
+                }
+            )
+        return messages
+
+    async def _execute_read_only_tool_call(self, tool_call: dict[str, Any]) -> str:
+        name = str(tool_call.get("name") or "").strip()
+        arguments = dict(tool_call.get("arguments") or {})
+        if name == "web_search":
+            from personal_assistant_bot.web_search_service import format_search_results, search_web
+
+            operation = str(arguments.get("operation") or "").strip()
+            query = str(arguments.get("query") or "").strip()
+            if operation != "search":
+                return f"Web search failed: unsupported operation '{operation}'."
+            if not query:
+                return "Web search failed: missing query."
+            try:
+                result = await search_web(query)
+            except Exception as exc:
+                logger.warning("Web search failed for %r: %s", query, exc)
+                return f"Web search failed: {exc}"
+            return format_search_results(result)
+        return f"Unsupported read-only tool: {name}"
 
     def _parse_json(self, content: str) -> dict[str, Any] | None:
         stripped = content.strip()

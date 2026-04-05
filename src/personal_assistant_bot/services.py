@@ -756,6 +756,19 @@ class AssistantService:
             )
             return [{"action_type": prepared.action_type, "payload": prepared.payload}]
 
+        if tool == "notes" and operation == "delete":
+            note_id = args.get("note_id")
+            if not note_id:
+                raise AssistantError("Note delete operation is missing note_id")
+            prepared = self._prepare_action(
+                chat_id=chat_id,
+                user_id=user_id,
+                action_type="delete_note",
+                payload={"note_id": note_id},
+                prompt_text="",
+            )
+            return [{"action_type": prepared.action_type, "payload": prepared.payload}]
+
         if tool == "reminders":
             if operation == "create":
                 prepared = self._prepare_action(
@@ -865,6 +878,12 @@ class AssistantService:
                 content=content,
             )
             return f"Saved note #{note_id}"
+        if action_type == "delete_note":
+            note_id = int(payload.get("note_id", 0))
+            deleted = self.remove_note(chat_id=chat_id, user_id=user_id, note_id=note_id)
+            if deleted:
+                return f"Deleted note #{note_id}"
+            return f"Note #{note_id} not found"
         if action_type == "create_reminder":
             when_local = str(payload.get("when_local", "")).strip()
             message = str(payload.get("message", "")).strip()
@@ -922,6 +941,7 @@ class AssistantService:
                 status=str(payload.get("status", "")).strip(),
             )
             return f"Reminder #{payload['reminder_id']} marked {payload['status']}"
+
         raise AssistantError(f"Unsupported approval action: {action_type}")
 
     def confirm_approval(self, *, chat_id: int, user_id: int, token: str) -> str:
