@@ -549,7 +549,16 @@ class PersonalAssistantBot:
 
         try:
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-            ai_result = await self.ai_client.respond(user_message=user_message, history=history, tool_snapshot=snapshot)
+            ai_result = await self.ai_client.respond(
+                user_message=user_message,
+                history=history,
+                tool_snapshot=snapshot,
+                read_only_tool_executor=lambda tool_call: self._execute_ai_read_only_tool_call(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    tool_call=tool_call,
+                ),
+            )
         except AIBackendError as exc:
             logger.warning("AI backend failure: %s", exc)
             await message.reply_text(self._prepend_transcript_feedback(str(exc), transcript_feedback))
@@ -959,17 +968,33 @@ class PersonalAssistantBot:
         user_id: int,
         window: str,
     ) -> tuple[str, datetime, datetime]:
-        preferences = self.assistant.ensure_chat(chat_id=chat_id, user_id=user_id)
-        timezone_info = ZoneInfo(preferences.timezone)
-        local_now = datetime.now(timezone.utc).astimezone(timezone_info)
-        today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-
+        title, start_local, end_local = self.assistant.resolve_calendar_window(
+            chat_id=chat_id,
+            user_id=user_id,
+            window=window,
+        )
         if window == "today":
-            return "Today's events", local_now, today_start + timedelta(days=1)
-        if window == "tomorrow":
-            start_local = today_start + timedelta(days=1)
-            return "Tomorrow", start_local, start_local + timedelta(days=1)
-        return "Next 7 days", local_now, local_now + timedelta(days=7)
+            return "Today's events", start_local, end_local
+        return title, start_local, end_local
+
+    async def _execute_ai_read_only_tool_call(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        tool_call: dict[str, object],
+    ) -> str | None:
+        name = str(tool_call.get("name") or "").strip()
+        arguments = dict(tool_call.get("arguments") or {})
+        operation = str(arguments.get("operation") or "").strip()
+        if name == "calendar" and operation == "list":
+            window = str(arguments.get("window") or "").strip()
+            return self.assistant.render_calendar_window_for_ai(
+                chat_id=chat_id,
+                user_id=user_id,
+                window=window,
+            )
+        return None
 
     def _format_calendar_events(
         self,

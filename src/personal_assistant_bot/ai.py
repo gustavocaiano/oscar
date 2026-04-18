@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 
@@ -33,7 +34,6 @@ class OpenAICompatibleAI:
         "create_reminder",
         "create_calendar_event",
     }
-    READ_ONLY_TOOLS = {"web_search"}
     MAX_TOOL_ROUNDS = 3
     SUPPORTED_TOOLS = {"tasks", "shopping", "notes", "reminders", "calendar", "web_search"}
 
@@ -123,11 +123,16 @@ class OpenAICompatibleAI:
             "type": "function",
             "function": {
                 "name": "calendar",
-                "description": "Plan calendar event creation.",
+                "description": "Calendar operations. Use operation='list' for read-only windows (today/tomorrow/next7/nextweek), or operation='create' for event creation.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["create"]},
+                        "operation": {"type": "string", "enum": ["create", "list"]},
+                        "window": {
+                            "type": "string",
+                            "enum": ["today", "tomorrow", "next7", "nextweek"],
+                            "description": "Required when operation is 'list'.",
+                        },
                         "summary": {"type": "string"},
                         "start_local": {
                             "type": "string",
@@ -139,7 +144,21 @@ class OpenAICompatibleAI:
                         },
                         "description": {"type": "string"},
                     },
-                    "required": ["operation", "summary", "start_local", "end_local"],
+                    "required": ["operation"],
+                    "oneOf": [
+                        {
+                            "properties": {
+                                "operation": {"const": "list"},
+                            },
+                            "required": ["operation", "window"],
+                        },
+                        {
+                            "properties": {
+                                "operation": {"const": "create"},
+                            },
+                            "required": ["operation", "summary", "start_local", "end_local"],
+                        },
+                    ],
                     "additionalProperties": False,
                 },
             },
@@ -178,6 +197,7 @@ class OpenAICompatibleAI:
         user_message: str,
         history: list[ChatMessage],
         tool_snapshot: dict[str, Any],
+        read_only_tool_executor: Callable[[dict[str, Any]], str | Awaitable[str] | None | Awaitable[None]] | None = None,
     ) -> AIResponse:
         if not self.configured:
             raise AIBackendError("AI backend is not configured")
@@ -192,6 +212,7 @@ class OpenAICompatibleAI:
                     "For write intents, do exactly one of these: ask one short follow-up question if required fields are missing or ambiguous; OR call one or more tools. "
                     "Prefer the snapshot for read queries instead of function tools. "
                     "The web_search tool is read-only, runs immediately without confirmation, and must use operation='search'. Do not mix web_search with write tools in the same response. After receiving web_search results, answer the user directly. "
+                    "The calendar tool supports operation='list' (read-only, immediate, requires window=today|tomorrow|next7|nextweek) and operation='create' (write, requires confirmation). Do not mix calendar list reads with write tools in the same response. After receiving calendar list results, answer the user directly. "
                     "When creating reminders or calendar events, every local date/time must use exact format YYYY-MM-DD HH:MM. "
                     "IDs in the snapshot may be opaque strings or numeric values; when updating or deleting tasks, shopping items, reminders, or notes, copy the ID exactly as shown. "
                     "For note or inbox deletions, use note_id from the snapshot; if you cannot identify a single note confidently, ask one short follow-up question. "
@@ -245,6 +266,7 @@ class OpenAICompatibleAI:
                         await self._build_read_only_followup_messages(
                             message_payload=message_payload,
                             tool_calls=tool_calls,
+                            read_only_tool_executor=read_only_tool_executor,
                         )
                     )
                     allow_tools = False
@@ -514,13 +536,20 @@ class OpenAICompatibleAI:
         return steps, None
 
     def _is_read_only_tool_call(self, tool_call: dict[str, Any]) -> bool:
-        return str(tool_call.get("name") or "").strip() in self.READ_ONLY_TOOLS
+        name = str(tool_call.get("name") or "").strip()
+        if name == "web_search":
+            return True
+        if name != "calendar":
+            return False
+        arguments = dict(tool_call.get("arguments") or {})
+        return str(arguments.get("operation") or "").strip() == "list"
 
     async def _build_read_only_followup_messages(
         self,
         *,
         message_payload: dict[str, Any],
         tool_calls: list[dict[str, Any]],
+        read_only_tool_executor: Callable[[dict[str, Any]], str | Awaitable[str] | None | Awaitable[None]] | None,
     ) -> list[dict[str, Any]]:
         assistant_message = {
             "role": "assistant",
@@ -539,7 +568,10 @@ class OpenAICompatibleAI:
         }
         messages: list[dict[str, Any]] = [assistant_message]
         for call in tool_calls:
-            tool_output = await self._execute_read_only_tool_call(call)
+            tool_output = await self._execute_read_only_tool_call(
+                call,
+                read_only_tool_executor=read_only_tool_executor,
+            )
             messages.append(
                 {
                     "role": "tool",
@@ -549,7 +581,24 @@ class OpenAICompatibleAI:
             )
         return messages
 
-    async def _execute_read_only_tool_call(self, tool_call: dict[str, Any]) -> str:
+    async def _execute_read_only_tool_call(
+        self,
+        tool_call: dict[str, Any],
+        *,
+        read_only_tool_executor: Callable[[dict[str, Any]], str | Awaitable[str] | None | Awaitable[None]] | None,
+    ) -> str:
+        if read_only_tool_executor is not None:
+            try:
+                delegated_result = read_only_tool_executor(tool_call)
+                if inspect.isawaitable(delegated_result):
+                    delegated_result = await delegated_result
+                if isinstance(delegated_result, str):
+                    return delegated_result
+            except Exception as exc:
+                name = str(tool_call.get("name") or "").strip() or "unknown"
+                logger.warning("Read-only tool executor failed for %s: %s", name, exc)
+                return f"{name} failed: {exc}"
+
         name = str(tool_call.get("name") or "").strip()
         arguments = dict(tool_call.get("arguments") or {})
         if name == "web_search":

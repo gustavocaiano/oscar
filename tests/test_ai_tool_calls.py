@@ -125,7 +125,8 @@ def test_ai_client_parses_multi_tool_plan(monkeypatch) -> None:
 def test_ai_client_executes_web_search_then_answers(monkeypatch) -> None:
     monkeypatch.setattr("personal_assistant_bot.ai.httpx.AsyncClient", FakeAsyncClient)
 
-    async def fake_execute_read_only_tool_call(self, tool_call):
+    async def fake_execute_read_only_tool_call(self, tool_call, *, read_only_tool_executor):
+        assert read_only_tool_executor is None
         assert tool_call["name"] == "web_search"
         assert tool_call["arguments"] == {
             "operation": "search",
@@ -194,6 +195,101 @@ def test_ai_client_executes_web_search_then_answers(monkeypatch) -> None:
     assert second_messages[-2]["tool_calls"][0]["function"]["name"] == "web_search"
     assert second_messages[-1]["role"] == "tool"
     assert "Portugal inflation slows" in second_messages[-1]["content"]
+
+
+def test_ai_client_executes_calendar_list_then_answers(monkeypatch) -> None:
+    monkeypatch.setattr("personal_assistant_bot.ai.httpx.AsyncClient", FakeAsyncClient)
+
+    FakeAsyncClient.responses = [
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_cal_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "calendar",
+                                    "arguments": '{"operation":"list","window":"tomorrow"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "Tomorrow you have Standup at 10:00 and Demo at 14:00.",
+                    }
+                }
+            ]
+        },
+    ]
+
+    async def fake_read_only_executor(tool_call):
+        assert tool_call["name"] == "calendar"
+        assert tool_call["arguments"] == {"operation": "list", "window": "tomorrow"}
+        return "Calendar window: Tomorrow (tomorrow)\nTimezone: UTC\nEvents:\n- 2026-04-02 10:00–10:30 — Standup"
+
+    client = OpenAICompatibleAI(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        model="gpt-test",
+        timeout_seconds=5.0,
+    )
+
+    result = asyncio.run(
+        client.respond(
+            user_message="what is on my calendar tomorrow?",
+            history=[],
+            tool_snapshot={},
+            read_only_tool_executor=fake_read_only_executor,
+        )
+    )
+
+    assert result.reply == "Tomorrow you have Standup at 10:00 and Demo at 14:00."
+    assert result.tool_plan is None
+    assert len(FakeAsyncClient.seen_payloads) == 2
+    second_messages = FakeAsyncClient.seen_payloads[1]["messages"]
+    assert second_messages[-2]["role"] == "assistant"
+    assert second_messages[-2]["tool_calls"][0]["function"]["name"] == "calendar"
+    assert second_messages[-1]["role"] == "tool"
+    assert "Calendar window: Tomorrow" in second_messages[-1]["content"]
+
+
+def test_read_only_detection_distinguishes_calendar_list_from_create() -> None:
+    client = OpenAICompatibleAI(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        model="gpt-test",
+        timeout_seconds=5.0,
+    )
+
+    assert client._is_read_only_tool_call(
+        {
+            "name": "calendar",
+            "arguments": {
+                "operation": "list",
+                "window": "today",
+            },
+        }
+    )
+    assert not client._is_read_only_tool_call(
+        {
+            "name": "calendar",
+            "arguments": {
+                "operation": "create",
+                "summary": "Demo",
+                "start_local": "2026-04-02 14:00",
+                "end_local": "2026-04-02 15:00",
+            },
+        }
+    )
 
 
 def test_ai_client_falls_back_to_streamed_text_when_non_stream_empty(monkeypatch) -> None:

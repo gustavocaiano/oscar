@@ -361,6 +361,80 @@ class AssistantService:
             end_local=local_end,
         )
 
+    def resolve_calendar_window(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        window: str,
+        now_utc: datetime | None = None,
+    ) -> tuple[str, datetime, datetime]:
+        preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        timezone_info = ZoneInfo(preferences.timezone)
+        local_now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone_info)
+        today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        normalized_window = window.strip().lower()
+
+        if normalized_window == "today":
+            return "Today", local_now, today_start + timedelta(days=1)
+        if normalized_window == "tomorrow":
+            start_local = today_start + timedelta(days=1)
+            return "Tomorrow", start_local, start_local + timedelta(days=1)
+        if normalized_window == "next7":
+            return "Next 7 days", local_now, local_now + timedelta(days=7)
+        if normalized_window == "nextweek":
+            days_until_next_monday = 7 - today_start.weekday()
+            start_local = today_start + timedelta(days=days_until_next_monday)
+            return "Next week", start_local, start_local + timedelta(days=7)
+        raise AssistantError("Window must be one of: today, tomorrow, next7, nextweek")
+
+    def render_calendar_window_for_ai(self, *, chat_id: int, user_id: int, window: str) -> str:
+        title, start_local, end_local = self.resolve_calendar_window(
+            chat_id=chat_id,
+            user_id=user_id,
+            window=window,
+        )
+        events = self.list_calendar_events_between(
+            chat_id=chat_id,
+            user_id=user_id,
+            start_local=start_local,
+            end_local=end_local,
+        )
+        preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        timezone_info = ZoneInfo(preferences.timezone)
+        lines = [f"Calendar window: {title} ({window.strip().lower()})", f"Timezone: {preferences.timezone}"]
+        if not events:
+            lines.append("Events: none")
+            return "\n".join(lines)
+
+        lines.append("Events:")
+        for event in events[:12]:
+            if getattr(event, "all_day", False):
+                start_date = getattr(event, "start_date", None)
+                if start_date is not None:
+                    day_label = start_date.isoformat()
+                else:
+                    start_value = event.start
+                    if start_value.tzinfo is None:
+                        start_value = start_value.replace(tzinfo=timezone_info)
+                    day_label = start_value.astimezone(timezone_info).date().isoformat()
+                lines.append(f"- {day_label} all-day — {event.summary}")
+                continue
+
+            start_value = event.start
+            end_value = event.end
+            if start_value.tzinfo is None:
+                start_value = start_value.replace(tzinfo=timezone_info)
+            if end_value.tzinfo is None:
+                end_value = end_value.replace(tzinfo=timezone_info)
+            start_value = start_value.astimezone(timezone_info)
+            end_value = end_value.astimezone(timezone_info)
+            lines.append(
+                f"- {start_value.strftime('%Y-%m-%d %H:%M')}–{end_value.strftime('%H:%M')} — {event.summary}"
+            )
+
+        return "\n".join(lines)
+
     def list_calendar_events_between(
         self,
         *,

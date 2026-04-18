@@ -140,8 +140,8 @@ class FakeAssistant:
 class FakeAIClient:
     configured = True
 
-    async def respond(self, *, user_message: str, history, tool_snapshot):
-        del history, tool_snapshot
+    async def respond(self, *, user_message: str, history, tool_snapshot, read_only_tool_executor=None):
+        del history, tool_snapshot, read_only_tool_executor
         return AIResponse(reply=f"Reply for: {user_message}", proposed_action=None)
 
 

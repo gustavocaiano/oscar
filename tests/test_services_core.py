@@ -237,6 +237,77 @@ def test_tool_snapshot_distinguishes_empty_and_unavailable_calendar(tmp_path: Pa
     assert "unavailable (Calendar 'Work' was not found)" in error_service.build_briefing(chat_id=1, user_id=2)
 
 
+def test_resolve_calendar_window_supports_fixed_ai_windows(tmp_path: Path) -> None:
+    service = build_service(tmp_path, calendar=FakeCalendarService(configured=True, events=[]))
+    now_utc = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)  # Saturday
+
+    today_title, today_start, today_end = service.resolve_calendar_window(
+        chat_id=1,
+        user_id=2,
+        window="today",
+        now_utc=now_utc,
+    )
+    assert today_title == "Today"
+    assert today_start.isoformat() == "2026-04-18T12:00:00+00:00"
+    assert today_end.isoformat() == "2026-04-19T00:00:00+00:00"
+
+    tomorrow_title, tomorrow_start, tomorrow_end = service.resolve_calendar_window(
+        chat_id=1,
+        user_id=2,
+        window="tomorrow",
+        now_utc=now_utc,
+    )
+    assert tomorrow_title == "Tomorrow"
+    assert tomorrow_start.isoformat() == "2026-04-19T00:00:00+00:00"
+    assert tomorrow_end.isoformat() == "2026-04-20T00:00:00+00:00"
+
+    next7_title, next7_start, next7_end = service.resolve_calendar_window(
+        chat_id=1,
+        user_id=2,
+        window="next7",
+        now_utc=now_utc,
+    )
+    assert next7_title == "Next 7 days"
+    assert next7_start.isoformat() == "2026-04-18T12:00:00+00:00"
+    assert next7_end.isoformat() == "2026-04-25T12:00:00+00:00"
+
+    nextweek_title, nextweek_start, nextweek_end = service.resolve_calendar_window(
+        chat_id=1,
+        user_id=2,
+        window="nextweek",
+        now_utc=now_utc,
+    )
+    assert nextweek_title == "Next week"
+    assert nextweek_start.isoformat() == "2026-04-20T00:00:00+00:00"
+    assert nextweek_end.isoformat() == "2026-04-27T00:00:00+00:00"
+
+
+def test_render_calendar_window_for_ai_returns_compact_text(tmp_path: Path) -> None:
+    calendar = FakeCalendarService(
+        configured=True,
+        events=[
+            type(
+                "Event",
+                (),
+                {
+                    "summary": "Standup",
+                    "start": datetime(2026, 4, 19, 10, 0, tzinfo=timezone.utc),
+                    "end": datetime(2026, 4, 19, 10, 30, tzinfo=timezone.utc),
+                    "uid": "evt-standup",
+                },
+            )
+        ],
+    )
+    service = build_service(tmp_path, calendar=calendar)
+
+    text = service.render_calendar_window_for_ai(chat_id=1, user_id=2, window="tomorrow")
+
+    assert "Calendar window: Tomorrow (tomorrow)" in text
+    assert "Timezone: UTC" in text
+    assert "2026-04-19 10:00" in text
+    assert "Standup" in text
+
+
 def test_task_syncs_to_kbplus_when_configured(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     storage = SQLiteStorage(settings.database_path)

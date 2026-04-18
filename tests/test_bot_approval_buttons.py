@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from personal_assistant_bot.ai import AIResponse
@@ -173,6 +173,20 @@ class FakeAssistant:
             )
         ]
 
+    def resolve_calendar_window(self, *, chat_id: int, user_id: int, window: str, now_utc=None):
+        del chat_id, user_id, now_utc
+        base = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+        if window == "tomorrow":
+            start = datetime(2026, 4, 2, 0, 0, tzinfo=timezone.utc)
+            return "Tomorrow", start, start + timedelta(days=1)
+        if window == "today":
+            return "Today", base, datetime(2026, 4, 2, 0, 0, tzinfo=timezone.utc)
+        return "Next 7 days", base, base + timedelta(days=7)
+
+    def render_calendar_window_for_ai(self, *, chat_id: int, user_id: int, window: str):
+        del chat_id, user_id
+        return f"Calendar window: {window}"
+
     def confirm_approval(self, *, chat_id: int, user_id: int, token: str) -> str:
         self.confirm_calls.append((chat_id, user_id, token))
         return "Created task."
@@ -191,8 +205,8 @@ class FakeAssistant:
 class FakeAIClient:
     configured = True
 
-    async def respond(self, *, user_message: str, history, tool_snapshot):
-        del history, tool_snapshot
+    async def respond(self, *, user_message: str, history, tool_snapshot, read_only_tool_executor=None):
+        del history, tool_snapshot, read_only_tool_executor
         return AIResponse(
             reply=f"I can do that for: {user_message}",
             tool_plan=[
@@ -205,8 +219,8 @@ class FakeAIClient:
 class FakeDeleteNoteAIClient:
     configured = True
 
-    async def respond(self, *, user_message: str, history, tool_snapshot):
-        del user_message, history, tool_snapshot
+    async def respond(self, *, user_message: str, history, tool_snapshot, read_only_tool_executor=None):
+        del user_message, history, tool_snapshot, read_only_tool_executor
         return AIResponse(
             reply="I prepared a request for confirmation.",
             tool_plan=[{"tool": "notes", "operation": "delete", "args": {}}],
