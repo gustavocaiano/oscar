@@ -203,6 +203,22 @@ def test_confirm_approval_supports_multi_action_tool_plan(tmp_path: Path) -> Non
     assert [item.message for item in reminders] == ["Call Alice"]
 
 
+def test_confirm_approval_supports_delete_note_tool_plan(tmp_path: Path) -> None:
+    service = build_service(tmp_path)
+    note_id = service.add_note(chat_id=10, user_id=20, kind="note", content="Buy milk")
+
+    pending = service.create_pending_tool_plan(
+        chat_id=10,
+        user_id=20,
+        steps=[{"tool": "notes", "operation": "delete", "args": {"note_id": note_id}}],
+    )
+
+    result = service.confirm_approval(chat_id=10, user_id=20, token=pending.token)
+
+    assert result == f"Deleted note #{note_id}"
+    assert service.list_notes(chat_id=10, user_id=20, limit=10) == []
+
+
 def test_confirm_approval_hides_kbplus_task_id_in_result(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     storage = SQLiteStorage(settings.database_path)

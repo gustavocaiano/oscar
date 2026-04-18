@@ -84,7 +84,7 @@ class OpenAICompatibleAI:
             "type": "function",
             "function": {
                 "name": "notes",
-                "description": "Manage notes and inbox items. Use create to add new notes/inbox items, use delete to remove existing items by ID.",
+                "description": "Manage notes and inbox items. Use create to add new notes/inbox items, use delete to remove an existing item by note_id from the snapshot.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -193,7 +193,8 @@ class OpenAICompatibleAI:
                     "Prefer the snapshot for read queries instead of function tools. "
                     "The web_search tool is read-only, runs immediately without confirmation, and must use operation='search'. Do not mix web_search with write tools in the same response. After receiving web_search results, answer the user directly. "
                     "When creating reminders or calendar events, every local date/time must use exact format YYYY-MM-DD HH:MM. "
-                    "Task ids in the snapshot may be opaque strings from KB+; when renaming or completing tasks, copy the task id exactly as shown. "
+                    "IDs in the snapshot may be opaque strings or numeric values; when updating or deleting tasks, shopping items, reminders, or notes, copy the ID exactly as shown. "
+                    "For note or inbox deletions, use note_id from the snapshot; if you cannot identify a single note confidently, ask one short follow-up question. "
                     "If the user asks for current information, news, or facts you don't have, use the web_search tool to find the answer."
                 ),
             },

@@ -9,7 +9,7 @@ from personal_assistant_bot.ai import AIResponse
 from personal_assistant_bot.bot import PersonalAssistantBot
 from personal_assistant_bot.config import Settings
 from personal_assistant_bot.kbplus_integration import KbplusColumn, KbplusTask
-from personal_assistant_bot.services import PendingApproval
+from personal_assistant_bot.services import AssistantError, PendingApproval
 from personal_assistant_bot.speech import TranscriptionResult
 
 
@@ -202,6 +202,31 @@ class FakeAIClient:
         )
 
 
+class FakeDeleteNoteAIClient:
+    configured = True
+
+    async def respond(self, *, user_message: str, history, tool_snapshot):
+        del user_message, history, tool_snapshot
+        return AIResponse(
+            reply="I prepared a request for confirmation.",
+            tool_plan=[{"tool": "notes", "operation": "delete", "args": {}}],
+        )
+
+
+class FakeNoteDeleteAssistant(FakeAssistant):
+    def __init__(self):
+        super().__init__()
+        self.notes = [type("Note", (), {"id": 7, "kind": "note", "content": "Buy milk"})()]
+
+    def create_pending_tool_plan(self, *, chat_id: int, user_id: int, steps: list[dict], prompt_text: str = ""):
+        del chat_id, user_id, steps, prompt_text
+        raise AssistantError("Note delete operation is missing note_id")
+
+    def list_notes(self, *, chat_id: int, user_id: int, limit: int = 10, query: str | None = None):
+        del chat_id, user_id, limit, query
+        return list(self.notes)
+
+
 def test_task_handler_lists_grouped_columns(tmp_path: Path) -> None:
     assistant = FakeAssistant()
     bot = PersonalAssistantBot(
@@ -321,6 +346,40 @@ def test_chat_handler_sends_inline_approval_buttons(tmp_path: Path) -> None:
     first_row = markup.inline_keyboard[0]
     assert first_row[0].callback_data == "approve:abc123"
     assert first_row[1].callback_data == "reject:abc123"
+
+
+def test_chat_handler_note_delete_fallback_creates_confirmation_after_id_reply(tmp_path: Path) -> None:
+    assistant = FakeNoteDeleteAssistant()
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path),
+        assistant=assistant,
+        ai_client=FakeDeleteNoteAIClient(),
+        transcriber=FakeSpeechToText(),
+    )
+    context = FakeContext(bot=FakeBot())
+
+    first_message = FakeMessage(text="delete the buy milk note")
+    first_update = FakeUpdate(effective_message=first_message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+
+    asyncio.run(bot.chat_handler(first_update, context))
+
+    assert len(first_message.replies) == 1
+    assert first_message.replies[0]["text"].startswith(
+        "I understood this as a note deletion request, but I couldn't prepare the confirmation yet."
+    )
+    assert "#7 [note] Buy milk" in first_message.replies[0]["text"]
+
+    second_message = FakeMessage(text="#7")
+    second_update = FakeUpdate(effective_message=second_message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+
+    asyncio.run(bot.chat_handler(second_update, context))
+
+    assert assistant.pending_calls[-1] == {
+        "action_type": "delete_note",
+        "payload": {"note_id": 7},
+        "prompt_text": "",
+    }
+    assert second_message.replies[0]["text"].startswith("Please confirm this request.")
 
 
 def test_approval_callback_handler_confirms_action(tmp_path: Path) -> None:

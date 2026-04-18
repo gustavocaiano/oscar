@@ -789,11 +789,37 @@ class PersonalAssistantBot:
         )
         return "What is the event title? Use /cancel to stop."
 
+    def _start_note_delete_draft(self, *, chat_id: int, user_id: int, source: str) -> str:
+        notes = self.assistant.list_notes(chat_id=chat_id, user_id=user_id, limit=8)
+        if not notes:
+            return "You don't have any notes or inbox items to delete."
+
+        self._drafts[self._draft_key(chat_id=chat_id, user_id=user_id)] = DraftState(
+            flow_type="note_delete",
+            step="note_id",
+            payload={},
+            source=source,
+            expires_at=self._draft_expiry(),
+        )
+        return (
+            "Reply with the note ID to delete, like 12. Use /cancel to stop.\n\n"
+            f"{self._format_notes(notes)}"
+        )
+
     def _start_fallback_draft(self, *, chat_id: int, user_id: int, flow_type: str) -> str:
         if flow_type == "reminder_create":
             prompt = self._start_reminder_draft(chat_id=chat_id, user_id=user_id, message=None, source="ai")
             return (
                 "I understood this as a reminder request, but I couldn't prepare the confirmation yet. "
+                "Let's do it step by step.\n\n"
+                f"{prompt}"
+            )
+        if flow_type == "note_delete":
+            prompt = self._start_note_delete_draft(chat_id=chat_id, user_id=user_id, source="ai")
+            if prompt == "You don't have any notes or inbox items to delete.":
+                return prompt
+            return (
+                "I understood this as a note deletion request, but I couldn't prepare the confirmation yet. "
                 "Let's do it step by step.\n\n"
                 f"{prompt}"
             )
@@ -896,6 +922,22 @@ class PersonalAssistantBot:
                         self._approval_message(approval), reply_markup=self._build_approval_keyboard(approval)
                     )
                     return
+
+            if draft.flow_type == "note_delete":
+                if draft.step == "note_id":
+                    note_id = self._parse_note_id(user_message)
+                    approval = self.assistant.create_pending_approval(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        action_type="delete_note",
+                        payload={"note_id": note_id},
+                        prompt_text="",
+                    )
+                    self._pop_draft(chat_id=chat_id, user_id=user_id)
+                    await message.reply_text(
+                        self._approval_message(approval), reply_markup=self._build_approval_keyboard(approval)
+                    )
+                    return
         except AssistantError as exc:
             await message.reply_text(str(exc))
             return
@@ -988,6 +1030,10 @@ class PersonalAssistantBot:
 
     def _infer_write_intent(self, *, user_message: str, history: list[object]) -> str | None:
         lower = user_message.lower()
+        if any(keyword in lower for keyword in ("delete", "remove", "erase")) and any(
+            keyword in lower for keyword in ("note", "notes", "inbox item", "inbox")
+        ):
+            return "note_delete"
         if "remind me" in lower or "reminder" in lower:
             return "reminder_create"
         if (
@@ -1001,11 +1047,22 @@ class PersonalAssistantBot:
                 if getattr(item, "role", None) != "assistant":
                     continue
                 content = str(getattr(item, "content", "")).lower()
+                if "delete note" in content or "note deletion" in content:
+                    return "note_delete"
                 if "reminder" in content:
                     return "reminder_create"
                 if "calendar" in content or "event" in content:
                     return "calendar_create"
         return None
+
+    def _parse_note_id(self, user_message: str) -> int:
+        match = re.search(r"#?(\d+)", user_message)
+        if match is None:
+            raise AssistantError("Please reply with the note ID to delete, like 12. Use /cancel to stop.")
+        note_id = int(match.group(1))
+        if note_id <= 0:
+            raise AssistantError("Please reply with the note ID to delete, like 12. Use /cancel to stop.")
+        return note_id
 
     def _recover_approval_from_history(
         self,

@@ -1329,6 +1329,15 @@ class AssistantService:
                 raise AssistantError("Pending note action has an invalid kind")
             return {"kind": kind, "content": content}
 
+        if action_type == "delete_note":
+            try:
+                note_id = int(payload.get("note_id", 0))
+            except (TypeError, ValueError) as exc:
+                raise AssistantError("Pending note delete action is missing its note id") from exc
+            if note_id <= 0:
+                raise AssistantError("Pending note delete action is missing its note id")
+            return {"note_id": note_id}
+
         if action_type == "create_reminder":
             when_local = str(payload.get("when_local", "")).strip()
             message = str(payload.get("message", "")).strip()
@@ -1434,6 +1443,8 @@ class AssistantService:
             return f"Add shopping items: {', '.join(payload['items'])}"
         if action_type == "create_note":
             return f"Save {payload['kind']}: {payload['content']}"
+        if action_type == "delete_note":
+            return f"Delete note #{payload['note_id']}"
         if action_type == "create_reminder":
             return (
                 f"Create reminder: \"{payload['message']}\" @ {payload['when_local']} "
