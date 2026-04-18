@@ -16,15 +16,36 @@ class FakeResponse:
         return self._payload
 
 
+class FakeStreamResponse:
+    def __init__(self, lines):
+        self._lines = list(lines)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
 class FakeAsyncClient:
     responses = []
+    stream_lines = []
     seen_payloads = []
+    seen_stream_payloads = []
 
     def __init__(self, *, timeout: float):
         self.timeout = timeout
 
     async def __aenter__(self):
         type(self).seen_payloads = []
+        type(self).seen_stream_payloads = []
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
@@ -41,6 +62,14 @@ class FakeAsyncClient:
         assert headers["Authorization"].startswith("Bearer ")
         type(self).seen_payloads.append(json)
         return FakeResponse(type(self).responses.pop(0))
+
+    def stream(self, method: str, url: str, *, json, headers):
+        assert method == "POST"
+        assert url.endswith("/chat/completions")
+        assert json["stream"] is True
+        assert headers["Authorization"].startswith("Bearer ")
+        type(self).seen_stream_payloads.append(json)
+        return FakeStreamResponse(type(self).stream_lines.pop(0))
 
 
 def test_ai_client_parses_multi_tool_plan(monkeypatch) -> None:
@@ -165,3 +194,79 @@ def test_ai_client_executes_web_search_then_answers(monkeypatch) -> None:
     assert second_messages[-2]["tool_calls"][0]["function"]["name"] == "web_search"
     assert second_messages[-1]["role"] == "tool"
     assert "Portugal inflation slows" in second_messages[-1]["content"]
+
+
+def test_ai_client_falls_back_to_streamed_text_when_non_stream_empty(monkeypatch) -> None:
+    monkeypatch.setattr("personal_assistant_bot.ai.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": None,
+                    }
+                }
+            ]
+        }
+    ]
+    FakeAsyncClient.stream_lines = [
+        [
+            'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+            'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+            'data: {"choices":[{"delta":{"content":" from stream"}}]}',
+            "data: [DONE]",
+        ]
+    ]
+
+    client = OpenAICompatibleAI(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        model="gpt-test",
+        timeout_seconds=5.0,
+    )
+
+    result = asyncio.run(client.respond(user_message="hi", history=[], tool_snapshot={}))
+
+    assert result.reply == "Hello from stream"
+    assert result.tool_plan is None
+    assert len(FakeAsyncClient.seen_payloads) == 1
+    assert len(FakeAsyncClient.seen_stream_payloads) == 1
+    assert FakeAsyncClient.seen_stream_payloads[0]["stream"] is True
+
+
+def test_ai_client_falls_back_to_streamed_tool_calls_when_non_stream_empty(monkeypatch) -> None:
+    monkeypatch.setattr("personal_assistant_bot.ai.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": None,
+                    }
+                }
+            ]
+        }
+    ]
+    FakeAsyncClient.stream_lines = [
+        [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"tasks","arguments":"{\\"operation\\":\\"create\\",\\"title\\":\\""}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"Pay rent\\"}"}}]}}]}',
+            "data: [DONE]",
+        ]
+    ]
+
+    client = OpenAICompatibleAI(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        model="gpt-test",
+        timeout_seconds=5.0,
+    )
+
+    result = asyncio.run(client.respond(user_message="create task", history=[], tool_snapshot={}))
+
+    assert result.reply == "I prepared a request for confirmation."
+    assert result.tool_plan == [{"tool": "tasks", "operation": "create", "args": {"title": "Pay rent"}}]
+    assert len(FakeAsyncClient.seen_payloads) == 1
+    assert len(FakeAsyncClient.seen_stream_payloads) == 1

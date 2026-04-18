@@ -112,7 +112,11 @@ class CalendarService:
             events = calendar.search(start=start, end=end, event=True, expand=True)
             normalized: list[CalendarEvent] = []
             for event in events:
-                component = event.component
+                component: Any = getattr(event, "icalendar_component", None)
+                if component is None:
+                    component = getattr(event, "component", None)
+                if component is None:
+                    continue
                 dtstart = component.get("dtstart")
                 dtend = component.get("dtend")
                 if dtstart is None or dtend is None:

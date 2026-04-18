@@ -277,7 +277,145 @@ class OpenAICompatibleAI:
             payload["tool_choice"] = "none"
         response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+
+        if self._should_retry_with_stream(data):
+            streamed_message = await self._request_completion_stream(
+                client=client,
+                payload=payload,
+                headers=headers,
+            )
+            if streamed_message is not None:
+                return {"choices": [{"message": streamed_message}]}
+
+        return data
+
+    def _should_retry_with_stream(self, payload: dict[str, Any]) -> bool:
+        try:
+            message = self._extract_message(payload)
+        except AIBackendError:
+            return False
+
+        return not self._extract_content(message).strip() and message.get("tool_calls") is None
+
+    async def _request_completion_stream(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> dict[str, Any] | None:
+        stream_payload = {**payload, "stream": True}
+        content_parts: list[str] = []
+        tool_call_chunks: dict[int, dict[str, Any]] = {}
+
+        async with client.stream(
+            "POST",
+            f"{self.base_url}/chat/completions",
+            json=stream_payload,
+            headers=headers,
+        ) as response:
+            response.raise_for_status()
+
+            async for line in response.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data_line = line[5:].strip()
+                if not data_line:
+                    continue
+                if data_line == "[DONE]":
+                    break
+
+                try:
+                    event = json.loads(data_line)
+                except json.JSONDecodeError:
+                    logger.debug("Ignoring invalid SSE chunk: %s", data_line)
+                    continue
+
+                choices = event.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    continue
+                choice = choices[0]
+                if not isinstance(choice, dict):
+                    continue
+
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    continue
+
+                self._append_stream_delta_content(content_parts, delta)
+                self._append_stream_delta_tool_calls(tool_call_chunks, delta)
+
+        content = "".join(content_parts)
+        tool_calls = self._build_stream_tool_calls(tool_call_chunks)
+        if not content.strip() and not tool_calls:
+            return None
+
+        message: dict[str, Any] = {"content": content}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        return message
+
+    def _append_stream_delta_content(self, content_parts: list[str], delta: dict[str, Any]) -> None:
+        content = delta.get("content")
+        if isinstance(content, str):
+            content_parts.append(content)
+            return
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, str):
+                    content_parts.append(item)
+                elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                    content_parts.append(item["text"])
+
+    def _append_stream_delta_tool_calls(
+        self,
+        tool_call_chunks: dict[int, dict[str, Any]],
+        delta: dict[str, Any],
+    ) -> None:
+        raw_tool_calls = delta.get("tool_calls")
+        if not isinstance(raw_tool_calls, list):
+            return
+
+        for fallback_index, raw_tool_call in enumerate(raw_tool_calls):
+            if not isinstance(raw_tool_call, dict):
+                continue
+            index = raw_tool_call.get("index")
+            if not isinstance(index, int) or index < 0:
+                index = fallback_index
+
+            tool_call = tool_call_chunks.setdefault(
+                index,
+                {
+                    "id": f"call_{index + 1}",
+                    "type": "function",
+                    "function": {"name": "", "arguments": ""},
+                },
+            )
+
+            call_id = raw_tool_call.get("id")
+            if isinstance(call_id, str) and call_id:
+                tool_call["id"] = call_id
+
+            call_type = raw_tool_call.get("type")
+            if isinstance(call_type, str) and call_type:
+                tool_call["type"] = call_type
+
+            function_payload = raw_tool_call.get("function")
+            if not isinstance(function_payload, dict):
+                continue
+
+            function = tool_call["function"]
+            name_delta = function_payload.get("name")
+            if isinstance(name_delta, str):
+                function["name"] += name_delta
+
+            arguments_delta = function_payload.get("arguments")
+            if isinstance(arguments_delta, str):
+                function["arguments"] += arguments_delta
+
+    def _build_stream_tool_calls(self, tool_call_chunks: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+        return [tool_call_chunks[index] for index in sorted(tool_call_chunks.keys())]
 
     def _build_standard_response(self, *, content: str, tool_error: str | None) -> AIResponse:
         parsed = self._parse_json(content)

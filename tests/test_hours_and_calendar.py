@@ -169,6 +169,56 @@ def test_create_event_uses_icalendar_component_and_closes_client() -> None:
     assert fake_client.closed is True
 
 
+def test_list_events_uses_icalendar_component_when_component_is_missing() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeDateField:
+        def __init__(self, dt: datetime) -> None:
+            self.dt = dt
+
+    class FakeEventResource:
+        __slots__ = ("icalendar_component",)
+
+        def __init__(self, component: dict[str, object]) -> None:
+            self.icalendar_component = component
+
+    class FakeCalendar:
+        def __init__(self, event_resource) -> None:
+            self._event_resource = event_resource
+
+        def search(self, *, start, end, event, expand):
+            del start, end, event, expand
+            return [self._event_resource]
+
+    start = datetime(2026, 4, 1, 14, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 4, 1, 15, 0, tzinfo=timezone.utc)
+    component = {
+        "summary": "From icalendar_component",
+        "dtstart": FakeDateField(start),
+        "dtend": FakeDateField(end),
+        "uid": "evt-ical-list-1",
+    }
+
+    service = CalendarService(url="https://example.test", username="user", password="pass", calendar_name=None)
+    fake_client = FakeClient()
+    fake_calendar = FakeCalendar(FakeEventResource(component))
+    service._get_calendar = lambda: (fake_client, fake_calendar)  # type: ignore[method-assign]
+
+    events = service.list_events(start=start, end=end)
+
+    assert len(events) == 1
+    assert events[0].summary == "From icalendar_component"
+    assert events[0].start == start
+    assert events[0].end == end
+    assert events[0].uid == "evt-ical-list-1"
+    assert fake_client.closed is True
+
+
 def test_get_calendar_matches_display_name_case_insensitively(monkeypatch) -> None:
     class FakeCalendar:
         def get_display_name(self) -> str:
