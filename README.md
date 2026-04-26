@@ -217,6 +217,19 @@ Example with CLIProxyAPI + Codex-style flow:
    docker compose up -d
    ```
 
+   The Compose stack is capped to about 4GB RAM by default:
+
+   - `assistant`: `ASSISTANT_MEMORY_LIMIT=3584m`
+   - `cliproxyapi`: `CLIPROXYAPI_MEMORY_LIMIT=512m`
+
+   Docker applies memory limits per container, so the stack budget is split between services. Adjust these values in `.env` if you need a different split, then recreate the containers:
+
+   ```bash
+   docker compose up -d --force-recreate
+   ```
+
+   The matching `*_MEMORY_SWAP_LIMIT` values default to the same numbers, which prevents Docker from extending the limit with swap.
+
 If you use another backend, just point `BACKEND_BASE_URL`, `BACKEND_API_KEY`, and `BACKEND_MODEL` to it.
 
 ## Local web search setup

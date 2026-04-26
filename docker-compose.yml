@@ -3,6 +3,8 @@ services:
     build:
       context: .
     restart: unless-stopped
+    mem_limit: ${ASSISTANT_MEMORY_LIMIT:-3584m}
+    memswap_limit: ${ASSISTANT_MEMORY_SWAP_LIMIT:-3584m}
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       ALLOWED_CHAT_IDS: ${ALLOWED_CHAT_IDS:-}
@@ -48,6 +50,8 @@ services:
   cliproxyapi:
     image: eceasy/cli-proxy-api:latest
     restart: unless-stopped
+    mem_limit: ${CLIPROXYAPI_MEMORY_LIMIT:-512m}
+    memswap_limit: ${CLIPROXYAPI_MEMORY_SWAP_LIMIT:-512m}
     ports:
       - "8317:8317"
       - "1455:1455"
