@@ -8,6 +8,8 @@ from personal_assistant_bot.ai import OpenAICompatibleAI
 class FakeResponse:
     def __init__(self, payload):
         self._payload = payload
+        self.is_error = False
+        self.status_code = 200
 
     def raise_for_status(self) -> None:
         return None
@@ -15,10 +17,16 @@ class FakeResponse:
     def json(self):
         return self._payload
 
+    @property
+    def text(self):
+        return ""
+
 
 class FakeStreamResponse:
     def __init__(self, lines):
         self._lines = list(lines)
+        self.is_error = False
+        self.status_code = 200
 
     async def __aenter__(self):
         return self
@@ -32,6 +40,13 @@ class FakeStreamResponse:
     async def aiter_lines(self):
         for line in self._lines:
             yield line
+
+    async def aread(self):
+        return b""
+
+    @property
+    def text(self):
+        return ""
 
 
 class FakeAsyncClient:
