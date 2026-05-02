@@ -139,32 +139,21 @@ class OpenAICompatibleAI:
                             "enum": ["today", "tomorrow", "next7", "nextweek"],
                             "description": "Required when operation is 'list'.",
                         },
-                        "summary": {"type": "string"},
+                        "summary": {
+                            "type": "string",
+                            "description": "Required when operation is 'create'.",
+                        },
                         "start_local": {
                             "type": "string",
-                            "description": "Local start date/time in exact format YYYY-MM-DD HH:MM.",
+                            "description": "Required when operation is 'create'. Local start date/time in exact format YYYY-MM-DD HH:MM.",
                         },
                         "end_local": {
                             "type": "string",
-                            "description": "Local end date/time in exact format YYYY-MM-DD HH:MM.",
+                            "description": "Required when operation is 'create'. Local end date/time in exact format YYYY-MM-DD HH:MM.",
                         },
                         "description": {"type": "string"},
                     },
                     "required": ["operation"],
-                    "oneOf": [
-                        {
-                            "properties": {
-                                "operation": {"const": "list"},
-                            },
-                            "required": ["operation", "window"],
-                        },
-                        {
-                            "properties": {
-                                "operation": {"const": "create"},
-                            },
-                            "required": ["operation", "summary", "start_local", "end_local"],
-                        },
-                    ],
                     "additionalProperties": False,
                 },
             },
