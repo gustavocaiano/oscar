@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - depends on optional dependency at runtime
@@ -116,7 +115,9 @@ class LocalSpeechTranscriber:
         if self._model is not None:
             return self._model
         if WhisperModel is None:
-            raise SpeechToTextUnavailableError("Local voice transcription is unavailable because faster-whisper is not installed.")
+            raise SpeechToTextUnavailableError(
+                "Local voice transcription is unavailable because faster-whisper is not installed."
+            )
 
         self.model_dir.mkdir(parents=True, exist_ok=True)
         logger.info(

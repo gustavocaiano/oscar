@@ -163,29 +163,29 @@ class FakeSpeechToText:
 
 
 def test_voice_handler_routes_transcript_into_ai_flow_and_cleans_tempfile(tmp_path: Path) -> None:
-        assistant = FakeAssistant()
-        transcriber = FakeSpeechToText()
-        bot = PersonalAssistantBot(
-            settings=build_settings(tmp_path),
-            assistant=assistant,
-            ai_client=FakeAIClient(),
-            transcriber=transcriber,
-        )
-        telegram_file = FakeTelegramFile()
-        message = FakeMessage(
-            chat_id=10,
-            voice=FakeVoice(duration=12, file_size=1000, file_unique_id="voice-1"),
-            attachment=FakeAttachment(telegram_file),
-        )
-        update = FakeUpdate(effective_message=message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+    assistant = FakeAssistant()
+    transcriber = FakeSpeechToText()
+    bot = PersonalAssistantBot(
+        settings=build_settings(tmp_path),
+        assistant=assistant,
+        ai_client=FakeAIClient(),
+        transcriber=transcriber,
+    )
+    telegram_file = FakeTelegramFile()
+    message = FakeMessage(
+        chat_id=10,
+        voice=FakeVoice(duration=12, file_size=1000, file_unique_id="voice-1"),
+        attachment=FakeAttachment(telegram_file),
+    )
+    update = FakeUpdate(effective_message=message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
 
-        asyncio.run(bot.voice_handler(update, FakeContext(bot=FakeBot())))
+    asyncio.run(bot.voice_handler(update, FakeContext(bot=FakeBot())))
 
-        assert assistant.chat_history[0] == (10, 20, "user", "comprar pão")
-        assert assistant.chat_history[1] == (10, 20, "assistant", "Reply for: comprar pão")
-        assert 'Heard: "comprar pão"' in message.replies[0]["text"]
-        assert "Reply for: comprar pão" in message.replies[0]["text"]
-        assert transcriber.transcribed_paths[0].exists() is False
+    assert assistant.chat_history[0] == (10, 20, "user", "comprar pão")
+    assert assistant.chat_history[1] == (10, 20, "assistant", "Reply for: comprar pão")
+    assert 'Heard: "comprar pão"' in message.replies[0]["text"]
+    assert "Reply for: comprar pão" in message.replies[0]["text"]
+    assert transcriber.transcribed_paths[0].exists() is False
 
 
 def test_voice_handler_rejects_oversized_voice_note(tmp_path: Path) -> None:
@@ -214,7 +214,9 @@ def test_voice_handler_reports_unavailable_transcription(tmp_path: Path) -> None
         settings=build_settings(tmp_path),
         assistant=FakeAssistant(),
         ai_client=FakeAIClient(),
-        transcriber=FakeSpeechToText(unavailable_message="Local voice transcription is not enabled for this assistant."),
+        transcriber=FakeSpeechToText(
+            unavailable_message="Local voice transcription is not enabled for this assistant."
+        ),
     )
     message = FakeMessage(
         chat_id=10,

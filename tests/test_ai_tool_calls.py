@@ -199,7 +199,9 @@ def test_ai_client_executes_web_search_then_answers(monkeypatch) -> None:
         timeout_seconds=5.0,
     )
 
-    result = asyncio.run(client.respond(user_message="what is the latest Portugal inflation", history=[], tool_snapshot={}))
+    result = asyncio.run(
+        client.respond(user_message="what is the latest Portugal inflation", history=[], tool_snapshot={})
+    )
 
     assert result.reply == "Portugal inflation slowed this month according to recent reporting."
     assert result.tool_plan is None

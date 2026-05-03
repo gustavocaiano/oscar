@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+
+import pytest
 
 from personal_assistant_bot.config import Settings
 from personal_assistant_bot.kbplus_integration import KbplusColumn, KbplusTask
-import pytest
-
 from personal_assistant_bot.services import AssistantError, AssistantService
 from personal_assistant_bot.storage import SQLiteStorage
 
@@ -120,7 +120,7 @@ def test_scheduler_generates_notifications_and_marks_state(tmp_path: Path) -> No
     service.create_items(chat_id=10, user_id=20, kind="task", titles=["Write report"])
     service.create_reminder(chat_id=10, user_id=20, due_text="2026-04-01 00:00", message="Call mom")
 
-    notifications = service.get_due_notifications(now_utc=datetime(2026, 4, 1, 0, 1, tzinfo=timezone.utc))
+    notifications = service.get_due_notifications(now_utc=datetime(2026, 4, 1, 0, 1, tzinfo=UTC))
 
     texts = [notification.text for notification in notifications]
     assert any("Reminder: Call mom" in text for text in texts)

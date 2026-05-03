@@ -114,9 +114,7 @@ def _parse_allowed_chat_ids(raw_value: str | None) -> frozenset[int]:
         try:
             ids.add(int(stripped))
         except ValueError as exc:
-            raise ConfigurationError(
-                "ALLOWED_CHAT_IDS must be a comma-separated list of numeric chat ids"
-            ) from exc
+            raise ConfigurationError("ALLOWED_CHAT_IDS must be a comma-separated list of numeric chat ids") from exc
     return frozenset(ids)
 
 

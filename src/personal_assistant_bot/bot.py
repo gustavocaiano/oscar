@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
 import re
 import tempfile
-from datetime import datetime, timedelta, timezone
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Iterable
 from zoneinfo import ZoneInfo
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update, Voice
@@ -32,7 +32,6 @@ from personal_assistant_bot.speech import (
     SpeechToTextUnavailableError,
 )
 from personal_assistant_bot.storage import ListItem, NoteItem, ReminderItem
-
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +142,9 @@ class PersonalAssistantBot:
                 await update.effective_message.reply_text(f"Saved note #{note_id}")
                 return
             if subcommand == "inbox":
-                note_id = self.assistant.add_note(chat_id=chat_id, user_id=user_id, kind="inbox", content=" ".join(rest))
+                note_id = self.assistant.add_note(
+                    chat_id=chat_id, user_id=user_id, kind="inbox", content=" ".join(rest)
+                )
                 await update.effective_message.reply_text(f"Saved inbox item #{note_id}")
                 return
             if subcommand == "list":
@@ -304,10 +305,7 @@ class PersonalAssistantBot:
             if subcommand == "month":
                 month = None
                 if len(context.args) > 1:
-                    if context.args[1].startswith("get"):
-                        month = parse_getmm(context.args[1])
-                    else:
-                        month = int(context.args[1])
+                    month = parse_getmm(context.args[1]) if context.args[1].startswith("get") else int(context.args[1])
                 await update.effective_message.reply_text(
                     self.assistant.get_month_hours(chat_id=chat_id, user_id=user_id, month=month)
                 )
@@ -623,7 +621,7 @@ class PersonalAssistantBot:
         )
 
     async def scheduler_tick(self, context: ContextTypes.DEFAULT_TYPE) -> None:
-        notifications = self.assistant.get_due_notifications(now_utc=datetime.now(timezone.utc))
+        notifications = self.assistant.get_due_notifications(now_utc=datetime.now(UTC))
         for notification in notifications:
             try:
                 await context.bot.send_message(chat_id=notification.chat_id, text=notification.text)
@@ -677,9 +675,7 @@ class PersonalAssistantBot:
                     if kind == "task"
                     else int(raw_reference)
                 )
-                self.assistant.complete_item(
-                    chat_id=chat_id, user_id=user_id, kind=kind, item_id=item_identifier
-                )
+                self.assistant.complete_item(chat_id=chat_id, user_id=user_id, kind=kind, item_id=item_identifier)
                 item_label = raw_reference if kind == "task" else str(item_identifier)
                 if kind == "shopping":
                     item_label = f"#{item_label}"
@@ -734,7 +730,7 @@ class PersonalAssistantBot:
         return parts
 
     def _draft_expiry(self) -> datetime:
-        return datetime.now(timezone.utc) + timedelta(minutes=self.settings.approval_ttl_minutes)
+        return datetime.now(UTC) + timedelta(minutes=self.settings.approval_ttl_minutes)
 
     def _draft_key(self, *, chat_id: int, user_id: int) -> tuple[int, int]:
         return chat_id, user_id
@@ -744,7 +740,7 @@ class PersonalAssistantBot:
         draft = self._drafts.get(key)
         if draft is None:
             return None
-        if draft.expires_at < datetime.now(timezone.utc):
+        if draft.expires_at < datetime.now(UTC):
             self._drafts.pop(key, None)
             return None
         return draft
@@ -810,10 +806,7 @@ class PersonalAssistantBot:
             source=source,
             expires_at=self._draft_expiry(),
         )
-        return (
-            "Reply with the note ID to delete, like 12. Use /cancel to stop.\n\n"
-            f"{self._format_notes(notes)}"
-        )
+        return f"Reply with the note ID to delete, like 12. Use /cancel to stop.\n\n{self._format_notes(notes)}"
 
     def _start_fallback_draft(self, *, chat_id: int, user_id: int, flow_type: str) -> str:
         if flow_type == "reminder_create":
@@ -932,21 +925,20 @@ class PersonalAssistantBot:
                     )
                     return
 
-            if draft.flow_type == "note_delete":
-                if draft.step == "note_id":
-                    note_id = self._parse_note_id(user_message)
-                    approval = self.assistant.create_pending_approval(
-                        chat_id=chat_id,
-                        user_id=user_id,
-                        action_type="delete_note",
-                        payload={"note_id": note_id},
-                        prompt_text="",
-                    )
-                    self._pop_draft(chat_id=chat_id, user_id=user_id)
-                    await message.reply_text(
-                        self._approval_message(approval), reply_markup=self._build_approval_keyboard(approval)
-                    )
-                    return
+            if draft.flow_type == "note_delete" and draft.step == "note_id":
+                note_id = self._parse_note_id(user_message)
+                approval = self.assistant.create_pending_approval(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    action_type="delete_note",
+                    payload={"note_id": note_id},
+                    prompt_text="",
+                )
+                self._pop_draft(chat_id=chat_id, user_id=user_id)
+                await message.reply_text(
+                    self._approval_message(approval), reply_markup=self._build_approval_keyboard(approval)
+                )
+                return
         except AssistantError as exc:
             await message.reply_text(str(exc))
             return
@@ -1061,9 +1053,8 @@ class PersonalAssistantBot:
             return "note_delete"
         if "remind me" in lower or "reminder" in lower:
             return "reminder_create"
-        if (
-            any(keyword in lower for keyword in ("calendar", "event", "appointment"))
-            and any(keyword in lower for keyword in ("add", "create", "set", "schedule", "put"))
+        if any(keyword in lower for keyword in ("calendar", "event", "appointment")) and any(
+            keyword in lower for keyword in ("add", "create", "set", "schedule", "put")
         ):
             return "calendar_create"
 
@@ -1177,13 +1168,9 @@ class PersonalAssistantBot:
 
     def _validate_voice_note_limits(self, voice: Voice) -> str | None:
         if voice.duration > self.settings.stt_max_duration_seconds:
-            return (
-                f"Voice notes longer than {self.settings.stt_max_duration_seconds} seconds are not supported on this server."
-            )
+            return f"Voice notes longer than {self.settings.stt_max_duration_seconds} seconds are not supported on this server."
         if voice.file_size is not None and voice.file_size > self.settings.stt_max_file_size_mb * 1024 * 1024:
-            return (
-                f"Voice notes larger than {self.settings.stt_max_file_size_mb} MB are not supported on this server."
-            )
+            return f"Voice notes larger than {self.settings.stt_max_file_size_mb} MB are not supported on this server."
         return None
 
     async def _download_and_transcribe_voice_note(self, message, context: ContextTypes.DEFAULT_TYPE):

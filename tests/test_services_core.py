@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from personal_assistant_bot.config import Settings
@@ -119,7 +119,9 @@ class FakeKbplusClient:
                 else:
                     new_tasks.append(task)
             if updated:
-                self.columns[index] = KbplusColumn(id=column.id, name=column.name, is_done=column.is_done, tasks=new_tasks)
+                self.columns[index] = KbplusColumn(
+                    id=column.id, name=column.name, is_done=column.is_done, tasks=new_tasks
+                )
                 return
         raise KbplusIntegrationError("Task not found")
 
@@ -130,7 +132,9 @@ class FakeKbplusClient:
             remaining = [task for task in column.tasks if task.id != task_id]
             if len(remaining) != len(column.tasks):
                 moved_task = next(task for task in column.tasks if task.id == task_id)
-                self.columns[index] = KbplusColumn(id=column.id, name=column.name, is_done=column.is_done, tasks=remaining)
+                self.columns[index] = KbplusColumn(
+                    id=column.id, name=column.name, is_done=column.is_done, tasks=remaining
+                )
                 break
         if moved_task is None:
             raise KbplusIntegrationError("Task not found")
@@ -196,8 +200,8 @@ def test_notes_reminders_and_briefing(tmp_path: Path) -> None:
                 (),
                 {
                     "summary": "Dentist",
-                    "start": datetime(2026, 4, 1, 14, 0, tzinfo=timezone.utc),
-                    "end": datetime(2026, 4, 1, 15, 0, tzinfo=timezone.utc),
+                    "start": datetime(2026, 4, 1, 14, 0, tzinfo=UTC),
+                    "end": datetime(2026, 4, 1, 15, 0, tzinfo=UTC),
                     "uid": "evt-1",
                 },
             )
@@ -239,7 +243,7 @@ def test_tool_snapshot_distinguishes_empty_and_unavailable_calendar(tmp_path: Pa
 
 def test_resolve_calendar_window_supports_fixed_ai_windows(tmp_path: Path) -> None:
     service = build_service(tmp_path, calendar=FakeCalendarService(configured=True, events=[]))
-    now_utc = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)  # Saturday
+    now_utc = datetime(2026, 4, 18, 12, 0, tzinfo=UTC)  # Saturday
 
     today_title, today_start, today_end = service.resolve_calendar_window(
         chat_id=1,
@@ -291,8 +295,8 @@ def test_render_calendar_window_for_ai_returns_compact_text(tmp_path: Path) -> N
                 (),
                 {
                     "summary": "Standup",
-                    "start": datetime(2026, 4, 19, 10, 0, tzinfo=timezone.utc),
-                    "end": datetime(2026, 4, 19, 10, 30, tzinfo=timezone.utc),
+                    "start": datetime(2026, 4, 19, 10, 0, tzinfo=UTC),
+                    "end": datetime(2026, 4, 19, 10, 30, tzinfo=UTC),
                     "uid": "evt-standup",
                 },
             )

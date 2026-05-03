@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import httpx
 
 from personal_assistant_bot.ai_errors import classify_connection_error, classify_http_error, classify_timeout_error
 from personal_assistant_bot.storage import ChatMessage
-
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +96,19 @@ class OpenAICompatibleAI:
                     "type": "object",
                     "properties": {
                         "operation": {"type": "string", "enum": ["create", "delete"]},
-                        "note_id": {"type": "integer", "description": "The note ID to delete. Required when operation is 'delete'."},
-                        "kind": {"type": "string", "enum": ["note", "inbox"], "description": "Type of note. Required when operation is 'create'."},
-                        "content": {"type": "string", "description": "Note content. Required when operation is 'create'."},
+                        "note_id": {
+                            "type": "integer",
+                            "description": "The note ID to delete. Required when operation is 'delete'.",
+                        },
+                        "kind": {
+                            "type": "string",
+                            "enum": ["note", "inbox"],
+                            "description": "Type of note. Required when operation is 'create'.",
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Note content. Required when operation is 'create'.",
+                        },
                     },
                     "required": ["operation"],
                     "additionalProperties": False,
@@ -192,7 +203,8 @@ class OpenAICompatibleAI:
         user_message: str,
         history: list[ChatMessage],
         tool_snapshot: dict[str, Any],
-        read_only_tool_executor: Callable[[dict[str, Any]], str | Awaitable[str] | None | Awaitable[None]] | None = None,
+        read_only_tool_executor: Callable[[dict[str, Any]], str | Awaitable[str] | None | Awaitable[None]]
+        | None = None,
     ) -> AIResponse:
         if not self.configured:
             raise AIBackendError("AI backend is not configured")
@@ -274,10 +286,8 @@ class OpenAICompatibleAI:
             raise AIBackendError(message, status_code=status_code, detail=detail) from exc
         except httpx.HTTPStatusError as exc:
             body = None
-            try:
+            with contextlib.suppress(Exception):
                 body = exc.response.text
-            except Exception:
-                pass
             message, status_code, detail = classify_http_error(
                 status_code=exc.response.status_code,
                 response_body=body,

@@ -55,9 +55,7 @@ class KbplusTaskClient:
 
     @property
     def configured(self) -> bool:
-        return bool(
-            self.base_url and self.api_token and self.board_id and self.todo_column_id and self.done_column_id
-        )
+        return bool(self.base_url and self.api_token and self.board_id and self.todo_column_id and self.done_column_id)
 
     def list_columns(self, *, include_done: bool = False) -> list[KbplusColumn]:
         data = self._request("GET", f"/api/integrations/v1/boards/{self.board_id}/tasks")
@@ -99,10 +97,14 @@ class KbplusTaskClient:
                             column_name=column_name,
                             position=int(raw_task["position"]) if isinstance(raw_task.get("position"), int) else None,
                             created_at=(
-                                str(raw_task.get("createdAt")).strip() if raw_task.get("createdAt") is not None else None
+                                str(raw_task.get("createdAt")).strip()
+                                if raw_task.get("createdAt") is not None
+                                else None
                             ),
                             updated_at=(
-                                str(raw_task.get("updatedAt")).strip() if raw_task.get("updatedAt") is not None else None
+                                str(raw_task.get("updatedAt")).strip()
+                                if raw_task.get("updatedAt") is not None
+                                else None
                             ),
                         )
                     )

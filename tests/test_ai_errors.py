@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from personal_assistant_bot.ai import AIBackendError
 from personal_assistant_bot.ai_errors import (
+    _extract_error_detail,
     classify_connection_error,
     classify_http_error,
     classify_timeout_error,
-    _extract_error_detail,
 )
-
 
 # --- classify_http_error ---
 

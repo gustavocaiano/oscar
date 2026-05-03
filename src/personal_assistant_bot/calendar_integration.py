@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
 import logging
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, time
 from typing import Any
 
 try:  # pragma: no cover - exercised indirectly depending on environment
@@ -34,7 +34,7 @@ def normalize_caldav_datetime(value: date | datetime) -> tuple[datetime, bool, d
         if value.tzinfo is None:
             return value, False, None
         return value, False, None
-    return datetime.combine(value, time.min, tzinfo=timezone.utc), True, value
+    return datetime.combine(value, time.min, tzinfo=UTC), True, value
 
 
 class CalendarService:
@@ -135,9 +135,7 @@ class CalendarService:
                     )
                 )
             normalized.sort(
-                key=lambda item: item.start
-                if item.start.tzinfo is not None
-                else item.start.replace(tzinfo=timezone.utc)
+                key=lambda item: item.start if item.start.tzinfo is not None else item.start.replace(tzinfo=UTC)
             )
             return normalized
         except Exception as exc:  # pragma: no cover - exercised via injected fakes in tests

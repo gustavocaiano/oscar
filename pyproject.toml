@@ -20,6 +20,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0,<9",
+  "ruff>=0.8,<1",
+  "mypy>=1.10,<2",
 ]
 
 [project.scripts]
@@ -27,6 +29,52 @@ telegram-personal-assistant = "personal_assistant_bot.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+  "E",      # pycodestyle errors
+  "W",      # pycodestyle warnings
+  "F",      # pyflakes
+  "I",      # isort
+  "UP",     # pyupgrade
+  "B",      # flake8-bugbear
+  "SIM",    # flake8-simplify
+  "RUF100", # unused noqa
+]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]  # assert False is fine in tests
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+# Start permissive — tighten incrementally as type coverage improves
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = [
+  "faster_whisper",
+  "caldav",
+  "icalendar",
+  "telegram",
+  "telegram.ext",
+  "playwright",
+  "playwright.async_api",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

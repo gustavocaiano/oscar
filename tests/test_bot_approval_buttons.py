@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from personal_assistant_bot.ai import AIResponse
@@ -132,31 +132,39 @@ class FakeAssistant:
                 id="todo",
                 name="Todo",
                 is_done=False,
-                tasks=[KbplusTask(id="tsk_1", title="Buy apples", description=None, column_id="todo", column_name="Todo")],
+                tasks=[
+                    KbplusTask(id="tsk_1", title="Buy apples", description=None, column_id="todo", column_name="Todo")
+                ],
             ),
             KbplusColumn(
                 id="doing",
                 name="Doing",
                 is_done=False,
-                tasks=[KbplusTask(id="tsk_2", title="Call bank", description=None, column_id="doing", column_name="Doing")],
+                tasks=[
+                    KbplusTask(id="tsk_2", title="Call bank", description=None, column_id="doing", column_name="Doing")
+                ],
             ),
         ]
 
     def create_pending_approval(self, *, chat_id: int, user_id: int, action_type: str, payload: dict, prompt_text: str):
         del chat_id, user_id
         self.pending_calls.append({"action_type": action_type, "payload": payload, "prompt_text": prompt_text})
-        return PendingApproval(token="abc123", prompt_text=prompt_text or "Auto prompt", expires_at="2026-04-01T12:00:00+00:00")
+        return PendingApproval(
+            token="abc123", prompt_text=prompt_text or "Auto prompt", expires_at="2026-04-01T12:00:00+00:00"
+        )
 
     def create_pending_tool_plan(self, *, chat_id: int, user_id: int, steps: list[dict], prompt_text: str = ""):
         del chat_id, user_id, prompt_text
-        self.pending_calls.append({"action_type": "tool_plan", "payload": {"steps": steps}, "prompt_text": "2 planned actions"})
+        self.pending_calls.append(
+            {"action_type": "tool_plan", "payload": {"steps": steps}, "prompt_text": "2 planned actions"}
+        )
         return PendingApproval(token="abc123", prompt_text="2 planned actions", expires_at="2026-04-01T12:00:00+00:00")
 
     def parse_flexible_local_datetime(self, *, chat_id: int, user_id: int, raw_text: str):
         del chat_id, user_id
         if raw_text == "tomorrow 09:30":
-            return datetime(2026, 4, 2, 9, 30, tzinfo=timezone.utc)
-        return datetime.strptime(raw_text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            return datetime(2026, 4, 2, 9, 30, tzinfo=UTC)
+        return datetime.strptime(raw_text, "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
 
     def list_calendar_events_between(self, *, chat_id: int, user_id: int, start_local: datetime, end_local: datetime):
         del chat_id, user_id
@@ -167,20 +175,20 @@ class FakeAssistant:
                 (),
                 {
                     "summary": "Standup",
-                    "start": datetime(2026, 4, 2, 10, 0, tzinfo=timezone.utc),
-                    "end": datetime(2026, 4, 2, 10, 30, tzinfo=timezone.utc),
+                    "start": datetime(2026, 4, 2, 10, 0, tzinfo=UTC),
+                    "end": datetime(2026, 4, 2, 10, 30, tzinfo=UTC),
                 },
             )
         ]
 
     def resolve_calendar_window(self, *, chat_id: int, user_id: int, window: str, now_utc=None):
         del chat_id, user_id, now_utc
-        base = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+        base = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
         if window == "tomorrow":
-            start = datetime(2026, 4, 2, 0, 0, tzinfo=timezone.utc)
+            start = datetime(2026, 4, 2, 0, 0, tzinfo=UTC)
             return "Tomorrow", start, start + timedelta(days=1)
         if window == "today":
-            return "Today", base, datetime(2026, 4, 2, 0, 0, tzinfo=timezone.utc)
+            return "Today", base, datetime(2026, 4, 2, 0, 0, tzinfo=UTC)
         return "Next 7 days", base, base + timedelta(days=7)
 
     def render_calendar_window_for_ai(self, *, chat_id: int, user_id: int, window: str):
@@ -281,8 +289,12 @@ def test_task_done_resolves_numeric_reference_for_local_tasks(tmp_path: Path) ->
                 name="Open tasks",
                 is_done=False,
                 tasks=[
-                    KbplusTask(id="41", title="Buy apples", description=None, column_id="local-open", column_name="Open tasks"),
-                    KbplusTask(id="77", title="Call bank", description=None, column_id="local-open", column_name="Open tasks"),
+                    KbplusTask(
+                        id="41", title="Buy apples", description=None, column_id="local-open", column_name="Open tasks"
+                    ),
+                    KbplusTask(
+                        id="77", title="Call bank", description=None, column_id="local-open", column_name="Open tasks"
+                    ),
                 ],
             )
         ]
@@ -384,7 +396,9 @@ def test_chat_handler_note_delete_fallback_creates_confirmation_after_id_reply(t
     assert "#7 [note] Buy milk" in first_message.replies[0]["text"]
 
     second_message = FakeMessage(text="#7")
-    second_update = FakeUpdate(effective_message=second_message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+    second_update = FakeUpdate(
+        effective_message=second_message, effective_chat=FakeChat(10), effective_user=FakeUser(20)
+    )
 
     asyncio.run(bot.chat_handler(second_update, context))
 
@@ -438,7 +452,10 @@ def test_approval_callback_handler_rejects_action(tmp_path: Path) -> None:
 
 def test_parse_approval_callback_data_rejects_invalid_input(tmp_path: Path) -> None:
     bot = PersonalAssistantBot(
-        settings=build_settings(tmp_path), assistant=FakeAssistant(), ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
+        settings=build_settings(tmp_path),
+        assistant=FakeAssistant(),
+        ai_client=FakeAIClient(),
+        transcriber=FakeSpeechToText(),
     )
 
     assert bot._parse_approval_callback_data("approve:abc123") == ("approve", "abc123")
@@ -484,7 +501,9 @@ def test_reminder_add_interactive_flow_creates_pending_approval(tmp_path: Path) 
     assert start_message.replies[0]["text"] == "What should I remind you about? Use /cancel to stop."
 
     message_step = FakeMessage(text="Call mom")
-    message_update = FakeUpdate(effective_message=message_step, effective_chat=FakeChat(10), effective_user=FakeUser(20))
+    message_update = FakeUpdate(
+        effective_message=message_step, effective_chat=FakeChat(10), effective_user=FakeUser(20)
+    )
     asyncio.run(bot.chat_handler(message_update, FakeContext(bot=FakeBot())))
     assert "When should I remind you?" in message_step.replies[0]["text"]
 
@@ -523,7 +542,9 @@ def test_recover_approval_from_history_ignores_confirmation_prompts(tmp_path: Pa
         settings=build_settings(tmp_path), assistant=assistant, ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
     )
 
-    history = [type("Msg", (), {"role": "assistant", "content": "Please confirm this request.\n\nProposed action: ..."})]
+    history = [
+        type("Msg", (), {"role": "assistant", "content": "Please confirm this request.\n\nProposed action: ..."})
+    ]
 
     recovered = bot._recover_approval_from_history(chat_id=10, user_id=20, history=history)
 

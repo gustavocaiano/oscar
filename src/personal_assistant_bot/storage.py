@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -238,7 +238,7 @@ class SQLiteStorage:
             )
 
     def _now(self) -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
     def ensure_chat_preferences(
         self,
@@ -596,7 +596,7 @@ class SQLiteStorage:
 
     def claim_due_reminders(self, *, due_before: str, stale_after_seconds: int) -> list[ReminderItem]:
         claimed: list[ReminderItem] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         stale_before = (now - timedelta(seconds=stale_after_seconds)).isoformat()
         with self._connect() as connection:
             connection.execute(
@@ -782,7 +782,7 @@ class SQLiteStorage:
         claim_date: str,
         stale_after_seconds: int,
     ) -> bool:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         stale_before = (now - timedelta(seconds=stale_after_seconds)).isoformat()
         with self._connect() as connection:
             connection.execute(

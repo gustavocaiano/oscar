@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from personal_assistant_bot.calendar_integration import CalendarService, normalize_caldav_datetime
 from personal_assistant_bot.config import Settings
 from personal_assistant_bot.hours import format_hours_total, format_subtotals, parse_getmm, parse_hours
-from personal_assistant_bot.calendar_integration import CalendarService, normalize_caldav_datetime
 from personal_assistant_bot.services import AssistantError, AssistantService
 from personal_assistant_bot.storage import SQLiteStorage
 
@@ -21,7 +21,16 @@ class FakeCalendarService:
     def list_events(self, *, start, end):
         del start, end
         return [
-            type("Event", (), {"summary": "Doctor", "start": datetime(2026, 4, 1, 14, 0, tzinfo=timezone.utc), "end": datetime(2026, 4, 1, 15, 0, tzinfo=timezone.utc), "uid": "evt-1"})
+            type(
+                "Event",
+                (),
+                {
+                    "summary": "Doctor",
+                    "start": datetime(2026, 4, 1, 14, 0, tzinfo=UTC),
+                    "end": datetime(2026, 4, 1, 15, 0, tzinfo=UTC),
+                    "uid": "evt-1",
+                },
+            )
         ]
 
     def create_event(self, *, start, end, summary, description=None):
@@ -105,16 +114,12 @@ def test_calendar_edge_cases(tmp_path: Path) -> None:
 
 
 def test_caldav_datetime_normalization_handles_all_day_values() -> None:
-    normalized_date, is_all_day, original_date = normalize_caldav_datetime(
-        datetime(2026, 4, 1, 14, 0, tzinfo=timezone.utc)
-    )
+    normalized_date, is_all_day, original_date = normalize_caldav_datetime(datetime(2026, 4, 1, 14, 0, tzinfo=UTC))
     assert normalized_date.hour == 14
     assert is_all_day is False
     assert original_date is None
 
-    all_day_date, all_day_flag, original_date = normalize_caldav_datetime(
-        datetime(2026, 4, 2, 0, 0, tzinfo=timezone.utc).date()
-    )
+    all_day_date, all_day_flag, original_date = normalize_caldav_datetime(datetime(2026, 4, 2, 0, 0, tzinfo=UTC).date())
     assert all_day_date.hour == 0
     assert all_day_flag is True
     assert original_date.isoformat() == "2026-04-02"
@@ -146,8 +151,8 @@ def test_create_event_uses_icalendar_component_and_closes_client() -> None:
             del dtstart, dtend, summary, description
             return FakeCreatedResource(self._component)
 
-    start = datetime(2026, 4, 1, 14, 0, tzinfo=timezone.utc)
-    end = datetime(2026, 4, 1, 15, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 4, 1, 14, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 1, 15, 0, tzinfo=UTC)
     component = {
         "summary": "From icalendar_component",
         "dtstart": FakeDateField(start),
@@ -195,8 +200,8 @@ def test_list_events_uses_icalendar_component_when_component_is_missing() -> Non
             del start, end, event, expand
             return [self._event_resource]
 
-    start = datetime(2026, 4, 1, 14, 0, tzinfo=timezone.utc)
-    end = datetime(2026, 4, 1, 15, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 4, 1, 14, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 1, 15, 0, tzinfo=UTC)
     component = {
         "summary": "From icalendar_component",
         "dtstart": FakeDateField(start),

@@ -4,7 +4,7 @@ import logging
 import re
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -20,7 +20,6 @@ from personal_assistant_bot.storage import (
     ReminderItem,
     SQLiteStorage,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +87,7 @@ class AssistantService:
         return self.ensure_chat(chat_id=chat_id, user_id=user_id)
 
     def _local_now(self, preferences: ChatPreferences, now_utc: datetime | None = None) -> datetime:
-        reference = now_utc or datetime.now(timezone.utc)
+        reference = now_utc or datetime.now(UTC)
         return reference.astimezone(ZoneInfo(preferences.timezone))
 
     def parse_local_datetime(self, *, chat_id: int, user_id: int, raw_text: str) -> datetime:
@@ -189,7 +188,9 @@ class AssistantService:
             raise AssistantError("Please provide at least one item")
         if kind == "task" and self._kbplus_enabled():
             return [self._create_kbplus_task(title=title) for title in cleaned]
-        return [self.storage.create_list_item(user_id=user_id, chat_id=chat_id, kind=kind, title=title) for title in cleaned]
+        return [
+            self.storage.create_list_item(user_id=user_id, chat_id=chat_id, kind=kind, title=title) for title in cleaned
+        ]
 
     def list_items(self, *, chat_id: int, user_id: int, kind: str, include_done: bool = False) -> list[ListItem]:
         self.ensure_chat(chat_id=chat_id, user_id=user_id)
@@ -259,7 +260,9 @@ class AssistantService:
             self._rename_kbplus_task(task_id=str(item_id).strip(), title=title)
             return
         if kind == "task":
-            existing_task = self.storage.get_list_item(user_id=user_id, chat_id=chat_id, kind=kind, item_id=int(item_id))
+            existing_task = self.storage.get_list_item(
+                user_id=user_id, chat_id=chat_id, kind=kind, item_id=int(item_id)
+            )
             if existing_task is None:
                 raise AssistantError(f"{kind.title()} item #{item_id} was not found")
         updated = self.storage.update_list_item(
@@ -273,12 +276,12 @@ class AssistantService:
             self._complete_kbplus_task(task_id=str(item_id).strip())
             return
         if kind == "task":
-            existing_task = self.storage.get_list_item(user_id=user_id, chat_id=chat_id, kind=kind, item_id=int(item_id))
+            existing_task = self.storage.get_list_item(
+                user_id=user_id, chat_id=chat_id, kind=kind, item_id=int(item_id)
+            )
             if existing_task is None:
                 raise AssistantError(f"{kind.title()} item #{item_id} was not found")
-        updated = self.storage.mark_list_item_done(
-            user_id=user_id, chat_id=chat_id, kind=kind, item_id=int(item_id)
-        )
+        updated = self.storage.mark_list_item_done(user_id=user_id, chat_id=chat_id, kind=kind, item_id=int(item_id))
         if not updated:
             raise AssistantError(f"{kind.title()} item #{item_id} was not found")
 
@@ -303,7 +306,7 @@ class AssistantService:
         if not message.strip():
             raise AssistantError("Please provide reminder text")
         due_local = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=due_text)
-        due_utc = due_local.astimezone(timezone.utc).isoformat()
+        due_utc = due_local.astimezone(UTC).isoformat()
         return self.storage.create_reminder(user_id=user_id, chat_id=chat_id, message=message, due_at=due_utc)
 
     def list_reminders(self, *, chat_id: int, user_id: int, pending_only: bool = False) -> list[ReminderItem]:
@@ -371,7 +374,7 @@ class AssistantService:
     ) -> tuple[str, datetime, datetime]:
         preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
         timezone_info = ZoneInfo(preferences.timezone)
-        local_now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone_info)
+        local_now = (now_utc or datetime.now(UTC)).astimezone(timezone_info)
         today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
         normalized_window = window.strip().lower()
 
@@ -429,9 +432,7 @@ class AssistantService:
                 end_value = end_value.replace(tzinfo=timezone_info)
             start_value = start_value.astimezone(timezone_info)
             end_value = end_value.astimezone(timezone_info)
-            lines.append(
-                f"- {start_value.strftime('%Y-%m-%d %H:%M')}–{end_value.strftime('%H:%M')} — {event.summary}"
-            )
+            lines.append(f"- {start_value.strftime('%Y-%m-%d %H:%M')}–{end_value.strftime('%H:%M')} — {event.summary}")
 
         return "\n".join(lines)
 
@@ -544,9 +545,7 @@ class AssistantService:
                     "done": column.is_done,
                 }
                 tasks.append(task_entry)
-                limited_tasks.append(
-                    {"id": task.id, "title": task.title, "description": task.description}
-                )
+                limited_tasks.append({"id": task.id, "title": task.title, "description": task.description})
             if limited_tasks:
                 limited_task_columns.append(
                     {
@@ -626,7 +625,7 @@ class AssistantService:
             prompt_text=prompt_text,
         )
         token = secrets.token_hex(3)
-        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=self.settings.approval_ttl_minutes)).isoformat()
+        expires_at = (datetime.now(UTC) + timedelta(minutes=self.settings.approval_ttl_minutes)).isoformat()
         self.storage.create_approval(
             token=token,
             user_id=user_id,
@@ -653,7 +652,7 @@ class AssistantService:
             prompt_text=prompt_text,
         )
         token = secrets.token_hex(3)
-        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=self.settings.approval_ttl_minutes)).isoformat()
+        expires_at = (datetime.now(UTC) + timedelta(minutes=self.settings.approval_ttl_minutes)).isoformat()
         self.storage.create_approval(
             token=token,
             user_id=user_id,
@@ -1024,11 +1023,13 @@ class AssistantService:
             raise AssistantError("Approval token was not found")
         if approval.status != "pending":
             raise AssistantError(f"Approval token is already {approval.status}")
-        if datetime.fromisoformat(approval.expires_at) < datetime.now(timezone.utc):
+        if datetime.fromisoformat(approval.expires_at) < datetime.now(UTC):
             self.storage.transition_approval_status(token=token, expected_status="pending", new_status="expired")
             raise AssistantError("Approval token has expired")
         try:
-            if not self.storage.transition_approval_status(token=token, expected_status="pending", new_status="executing"):
+            if not self.storage.transition_approval_status(
+                token=token, expected_status="pending", new_status="executing"
+            ):
                 approval = self.storage.get_approval(token=token, user_id=user_id, chat_id=chat_id)
                 current_status = approval.status if approval else "missing"
                 raise AssistantError(f"Approval token is already {current_status}")
@@ -1069,7 +1070,9 @@ class AssistantService:
             limit=self.settings.chat_history_limit,
         )
 
-    def build_briefing(self, *, chat_id: int, user_id: int, now_utc: datetime | None = None, label: str = "Briefing") -> str:
+    def build_briefing(
+        self, *, chat_id: int, user_id: int, now_utc: datetime | None = None, label: str = "Briefing"
+    ) -> str:
         del now_utc
         snapshot = self.get_tool_snapshot(chat_id=chat_id, user_id=user_id)
         lines = [f"{label} ({snapshot['now_local'][:16].replace('T', ' ')})"]
@@ -1143,7 +1146,7 @@ class AssistantService:
         return "\n".join(lines)
 
     def get_due_notifications(self, *, now_utc: datetime | None = None) -> list[ScheduledNotification]:
-        reference = now_utc or datetime.now(timezone.utc)
+        reference = now_utc or datetime.now(UTC)
         due_notifications: list[ScheduledNotification] = []
 
         for reminder in self.storage.claim_due_reminders(
@@ -1520,16 +1523,12 @@ class AssistantService:
         if action_type == "delete_note":
             return f"Delete note #{payload['note_id']}"
         if action_type == "create_reminder":
-            return (
-                f"Create reminder: \"{payload['message']}\" @ {payload['when_local']} "
-                f"({preferences.timezone})"
-            )
+            return f'Create reminder: "{payload["message"]}" @ {payload["when_local"]} ({preferences.timezone})'
         if action_type == "create_calendar_event":
             start_label = payload["start_local"]
             end_label = payload["end_local"]
             return (
-                f"Create calendar event: \"{payload['summary']}\" @ {start_label} to {end_label} "
-                f"({preferences.timezone})"
+                f'Create calendar event: "{payload["summary"]}" @ {start_label} to {end_label} ({preferences.timezone})'
             )
         if action_type == "rename_list_item":
             label = "shopping item" if payload["kind"] == "shopping" else "task"

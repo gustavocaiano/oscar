@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_HALF_UP
 import re
-
+from decimal import ROUND_HALF_UP, Decimal
 
 _NUMERIC_PATTERN = re.compile(r"^-?\d+(?:\.\d+)?$")
 _DURATION_PATTERN = re.compile(
@@ -57,7 +56,4 @@ def format_hours_total(hours: Decimal) -> str:
 
 
 def format_subtotals(day_total: Decimal, month_total: Decimal) -> str:
-    return (
-        f"Day subtotal: {format_hours_total(day_total)}\n"
-        f"Month subtotal: {format_hours_total(month_total)}"
-    )
+    return f"Day subtotal: {format_hours_total(day_total)}\nMonth subtotal: {format_hours_total(month_total)}"

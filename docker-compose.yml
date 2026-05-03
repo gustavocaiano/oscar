@@ -1,5 +1,6 @@
 services:
   assistant:
+    image: ghcr.io/gustavocaiano/oscar:${OSCAR_IMAGE_TAG:-latest}
     build:
       context: .
     restart: unless-stopped
