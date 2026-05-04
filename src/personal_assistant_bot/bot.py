@@ -22,9 +22,9 @@ from telegram.ext import (
 )
 
 from personal_assistant_bot.ai import AIBackendError, AIResponse, OpenAICompatibleAI
+from personal_assistant_bot.calendar_integration import CalendarEvent
 from personal_assistant_bot.config import Settings
 from personal_assistant_bot.hours import parse_getmm
-from personal_assistant_bot.calendar_integration import CalendarEvent
 from personal_assistant_bot.services import AssistantError, AssistantService, PendingApproval
 from personal_assistant_bot.speech import (
     LocalSpeechTranscriber,
@@ -571,7 +571,7 @@ class PersonalAssistantBot:
                 user_message=user_message,
                 history=history,
                 tool_snapshot=snapshot,
-                read_only_tool_executor=lambda tool_call: self._execute_ai_read_only_tool_call(  # type: ignore[arg-type]
+                read_only_tool_executor=lambda tool_call: self._execute_ai_read_only_tool_call(  # type: ignore[arg-type, return-value]
                     chat_id=chat_id,
                     user_id=user_id,
                     tool_call=tool_call,
@@ -1028,8 +1028,8 @@ class PersonalAssistantBot:
         current_day: str | None = None
 
         for event in events[:12]:
-            if getattr(event, "all_day", False):
-                if getattr(event, "start_date", None) is not None:
+            if event.all_day:
+                if event.start_date is not None:
                     day_label = event.start_date.strftime("%A %Y-%m-%d")
                 else:
                     start_value = event.start

@@ -1480,7 +1480,7 @@ class AssistantService:
                 raise AssistantError("Pending list-item completion action has an invalid kind")
             raw_item_id = payload.get("item_id")
             if kind == "task":
-                item_id: int | str = str(raw_item_id or "").strip()
+                item_id = str(raw_item_id or "").strip()
                 if not item_id:
                     raise AssistantError("Pending list-item completion action is missing its item id")
             else:

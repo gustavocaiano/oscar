@@ -177,6 +177,9 @@ class FakeAssistant:
                     "summary": "Standup",
                     "start": datetime(2026, 4, 2, 10, 0, tzinfo=UTC),
                     "end": datetime(2026, 4, 2, 10, 30, tzinfo=UTC),
+                    "all_day": False,
+                    "start_date": None,
+                    "end_date": None,
                 },
             )
         ]

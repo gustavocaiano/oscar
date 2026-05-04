@@ -25,7 +25,7 @@ class FakeCalendarService:
         return list(self.events or [])
 
     def create_event(self, *, start, end, summary, description=None):
-        return type("Event", (), {"summary": summary, "start": start, "end": end, "uid": "evt-1"})
+        return type("Event", (), {"summary": summary, "start": start, "end": end, "uid": "evt-1", "all_day": False, "start_date": None, "end_date": None})
 
 
 def build_settings(tmp_path: Path) -> Settings:
@@ -203,6 +203,9 @@ def test_notes_reminders_and_briefing(tmp_path: Path) -> None:
                     "start": datetime(2026, 4, 1, 14, 0, tzinfo=UTC),
                     "end": datetime(2026, 4, 1, 15, 0, tzinfo=UTC),
                     "uid": "evt-1",
+                    "all_day": False,
+                    "start_date": None,
+                    "end_date": None,
                 },
             )
         ],

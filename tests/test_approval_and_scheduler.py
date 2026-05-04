@@ -24,7 +24,7 @@ class FakeCalendarService:
     def create_event(self, *, start, end, summary, description=None):
         if self.create_calls is not None:
             self.create_calls.append((start, end, summary, description))
-        return type("Event", (), {"summary": summary, "start": start, "end": end, "uid": "evt-1"})
+        return type("Event", (), {"summary": summary, "start": start, "end": end, "uid": "evt-1", "all_day": False, "start_date": None, "end_date": None})
 
 
 class FakeKbplusClient:
