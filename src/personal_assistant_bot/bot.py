@@ -321,9 +321,7 @@ class PersonalAssistantBot:
                 month = None
                 if len(context.args) > 1:
                     month = parse_getmm(context.args[1]) if context.args[1].startswith("get") else int(context.args[1])
-                await msg.reply_text(
-                    self.assistant.get_month_hours(chat_id=chat_id, user_id=user_id, month=month)
-                )
+                await msg.reply_text(self.assistant.get_month_hours(chat_id=chat_id, user_id=user_id, month=month))
                 return
             raise AssistantError("Unknown /h subcommand")
         except (AssistantError, ValueError) as exc:
@@ -342,9 +340,7 @@ class PersonalAssistantBot:
         subcommand = context.args[0].lower()
         try:
             if subcommand == "show":
-                await msg.reply_text(
-                    self.assistant.get_preferences_summary(chat_id=chat_id, user_id=user_id)
-                )
+                await msg.reply_text(self.assistant.get_preferences_summary(chat_id=chat_id, user_id=user_id))
                 return
             if subcommand in {"enable", "disable"}:
                 if len(context.args) < 2:

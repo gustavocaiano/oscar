@@ -594,14 +594,10 @@ class AssistantService:
                     "end": event.end.isoformat(),
                     "start_local": event.start_date.isoformat()
                     if event.all_day and event.start_date is not None
-                    else self._format_datetime_for_chat(
-                        event.start, preferences, all_day=event.all_day
-                    ),
+                    else self._format_datetime_for_chat(event.start, preferences, all_day=event.all_day),
                     "end_local": event.end_date.isoformat()
                     if event.all_day and event.end_date is not None
-                    else self._format_datetime_for_chat(
-                        event.end, preferences, all_day=event.all_day
-                    ),
+                    else self._format_datetime_for_chat(event.end, preferences, all_day=event.all_day),
                     "all_day": event.all_day,
                 }
                 for event in agenda_entries

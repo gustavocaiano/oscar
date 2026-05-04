@@ -25,7 +25,19 @@ class FakeCalendarService:
         return list(self.events or [])
 
     def create_event(self, *, start, end, summary, description=None):
-        return type("Event", (), {"summary": summary, "start": start, "end": end, "uid": "evt-1", "all_day": False, "start_date": None, "end_date": None})
+        return type(
+            "Event",
+            (),
+            {
+                "summary": summary,
+                "start": start,
+                "end": end,
+                "uid": "evt-1",
+                "all_day": False,
+                "start_date": None,
+                "end_date": None,
+            },
+        )
 
 
 def build_settings(tmp_path: Path) -> Settings:

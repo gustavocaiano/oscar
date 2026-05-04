@@ -35,7 +35,19 @@ class FakeCalendarService:
 
     def create_event(self, *, start, end, summary, description=None):
         del description
-        return type("Event", (), {"summary": summary, "start": start, "end": end, "uid": "evt-2", "all_day": False, "start_date": None, "end_date": None})
+        return type(
+            "Event",
+            (),
+            {
+                "summary": summary,
+                "start": start,
+                "end": end,
+                "uid": "evt-2",
+                "all_day": False,
+                "start_date": None,
+                "end_date": None,
+            },
+        )
 
 
 def build_settings(tmp_path: Path) -> Settings:
