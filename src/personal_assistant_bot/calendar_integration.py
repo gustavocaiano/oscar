@@ -8,7 +8,7 @@ from typing import Any
 try:  # pragma: no cover - exercised indirectly depending on environment
     from caldav import DAVClient
 except ImportError:  # pragma: no cover - allows unit tests without installed deps
-    DAVClient = None  # type: ignore[assignment]
+    DAVClient = None  # type: ignore[assignment, misc]
 
 
 logger = logging.getLogger(__name__)
@@ -76,6 +76,7 @@ class CalendarService:
             raise CalendarIntegrationError("Calendar integration is not configured")
         if DAVClient is None:
             raise CalendarIntegrationError("The 'caldav' package is not installed")
+        assert self.url is not None and self.username is not None and self.password is not None
         client = DAVClient(url=self.url, username=self.username, password=self.password)
         try:
             principal = client.principal()

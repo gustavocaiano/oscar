@@ -593,16 +593,16 @@ class AssistantService:
                     "start": event.start.isoformat(),
                     "end": event.end.isoformat(),
                     "start_local": event.start_date.isoformat()
-                    if getattr(event, "all_day", False) and getattr(event, "start_date", None) is not None
+                    if event.all_day and event.start_date is not None
                     else self._format_datetime_for_chat(
-                        event.start, preferences, all_day=getattr(event, "all_day", False)
+                        event.start, preferences, all_day=event.all_day
                     ),
                     "end_local": event.end_date.isoformat()
-                    if getattr(event, "all_day", False) and getattr(event, "end_date", None) is not None
+                    if event.all_day and event.end_date is not None
                     else self._format_datetime_for_chat(
-                        event.end, preferences, all_day=getattr(event, "all_day", False)
+                        event.end, preferences, all_day=event.all_day
                     ),
-                    "all_day": getattr(event, "all_day", False),
+                    "all_day": event.all_day,
                 }
                 for event in agenda_entries
             ],
@@ -983,6 +983,8 @@ class AssistantService:
             return f"Created calendar event: {event.summary}"
         if action_type == "rename_list_item":
             item_id = payload.get("item_id")
+            if item_id is None:
+                raise AssistantError("Missing item_id")
             self.rename_item(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -996,6 +998,8 @@ class AssistantService:
             return f"Renamed {label} {payload['item_id']}"
         if action_type == "complete_list_item":
             item_id = payload.get("item_id")
+            if item_id is None:
+                raise AssistantError("Missing item_id")
             self.complete_item(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -1455,7 +1459,7 @@ class AssistantService:
                 raise AssistantError("Pending list-item rename action has an invalid kind")
             raw_item_id = payload.get("item_id")
             if kind == "task":
-                item_id = str(raw_item_id or "").strip()
+                item_id: int | str = str(raw_item_id or "").strip()
                 if not item_id:
                     raise AssistantError("Pending list-item rename action is missing its item id")
             else:
@@ -1476,7 +1480,7 @@ class AssistantService:
                 raise AssistantError("Pending list-item completion action has an invalid kind")
             raw_item_id = payload.get("item_id")
             if kind == "task":
-                item_id = str(raw_item_id or "").strip()
+                item_id: int | str = str(raw_item_id or "").strip()
                 if not item_id:
                     raise AssistantError("Pending list-item completion action is missing its item id")
             else:

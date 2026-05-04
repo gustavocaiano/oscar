@@ -282,20 +282,20 @@ class OpenAICompatibleAI:
                     proposal_error="tool_round_limit",
                 )
         except httpx.TimeoutException as exc:
-            message, status_code, detail = classify_timeout_error()
-            raise AIBackendError(message, status_code=status_code, detail=detail) from exc
+            error_msg, status_code, detail = classify_timeout_error()
+            raise AIBackendError(error_msg, status_code=status_code, detail=detail) from exc
         except httpx.HTTPStatusError as exc:
             body = None
             with contextlib.suppress(Exception):
                 body = exc.response.text
-            message, status_code, detail = classify_http_error(
+            error_msg, status_code, detail = classify_http_error(
                 status_code=exc.response.status_code,
                 response_body=body,
             )
-            raise AIBackendError(message, status_code=status_code, detail=detail) from exc
+            raise AIBackendError(error_msg, status_code=status_code, detail=detail) from exc
         except httpx.HTTPError as exc:
-            message, status_code, detail = classify_connection_error(exc)
-            raise AIBackendError(message, status_code=status_code, detail=detail) from exc
+            error_msg, status_code, detail = classify_connection_error(exc)
+            raise AIBackendError(error_msg, status_code=status_code, detail=detail) from exc
 
     async def _request_completion(
         self,
@@ -323,7 +323,7 @@ class OpenAICompatibleAI:
                 response_body=response.text,
             )
             raise AIBackendError(message, status_code=status_code, detail=detail)
-        data = response.json()
+        data: dict[str, Any] = response.json()
 
         if self._should_retry_with_stream(data):
             streamed_message = await self._request_completion_stream(
@@ -368,11 +368,11 @@ class OpenAICompatibleAI:
                     body = response.text
                 except Exception:
                     pass
-                message, status_code, detail = classify_http_error(
+                error_msg, status_code, detail = classify_http_error(
                     status_code=response.status_code,
                     response_body=body,
                 )
-                raise AIBackendError(message, status_code=status_code, detail=detail)
+                raise AIBackendError(error_msg, status_code=status_code, detail=detail)
 
             async for line in response.aiter_lines():
                 if not line or not line.startswith("data:"):
@@ -408,10 +408,10 @@ class OpenAICompatibleAI:
         if not content.strip() and not tool_calls:
             return None
 
-        message: dict[str, Any] = {"content": content}
+        stream_message: dict[str, Any] = {"content": content}
         if tool_calls:
-            message["tool_calls"] = tool_calls
-        return message
+            stream_message["tool_calls"] = tool_calls
+        return stream_message
 
     def _append_stream_delta_content(self, content_parts: list[str], delta: dict[str, Any]) -> None:
         content = delta.get("content")

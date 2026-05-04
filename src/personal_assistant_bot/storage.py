@@ -240,6 +240,12 @@ class SQLiteStorage:
     def _now(self) -> str:
         return datetime.now(UTC).isoformat()
 
+    def _last_row_id(self, cursor: sqlite3.Cursor) -> int:
+        last_id = cursor.lastrowid
+        if last_id is None:
+            raise RuntimeError("INSERT failed to return a row ID")
+        return last_id
+
     def ensure_chat_preferences(
         self,
         *,
@@ -406,7 +412,7 @@ class SQLiteStorage:
                 """,
                 (user_id, chat_id, kind, title.strip(), now, now),
             )
-            return int(cursor.lastrowid)
+            return self._last_row_id(cursor)
 
     def list_items(self, *, user_id: int, chat_id: int, kind: str, include_done: bool = False) -> list[ListItem]:
         query = (
@@ -483,7 +489,7 @@ class SQLiteStorage:
                 "INSERT INTO notes (user_id, chat_id, kind, content, created_at) VALUES (?, ?, ?, ?, ?)",
                 (user_id, chat_id, kind, content.strip(), self._now()),
             )
-            return int(cursor.lastrowid)
+            return self._last_row_id(cursor)
 
     def list_notes(
         self,
@@ -535,7 +541,7 @@ class SQLiteStorage:
                 """,
                 (user_id, chat_id, message.strip(), due_at, now, now),
             )
-            return int(cursor.lastrowid)
+            return self._last_row_id(cursor)
 
     def list_reminders(self, *, user_id: int, chat_id: int, pending_only: bool = False) -> list[ReminderItem]:
         sql = "SELECT id, user_id, chat_id, message, due_at, status, created_at FROM reminders WHERE user_id = ? AND chat_id = ?"
@@ -652,7 +658,7 @@ class SQLiteStorage:
                 "INSERT INTO chat_messages (user_id, chat_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
                 (user_id, chat_id, role, content, self._now()),
             )
-            return int(cursor.lastrowid)
+            return self._last_row_id(cursor)
 
     def get_recent_chat_messages(self, *, user_id: int, chat_id: int, limit: int) -> list[ChatMessage]:
         with self._connect() as connection:
@@ -830,7 +836,7 @@ class SQLiteStorage:
                 """,
                 (user_id, chat_id, entry_date, str(hours), raw_text, self._now()),
             )
-            return int(cursor.lastrowid)
+            return self._last_row_id(cursor)
 
     def aggregate_month_hours(self, *, user_id: int, chat_id: int, year: int, month: int) -> Decimal:
         if month < 1 or month > 12:
