@@ -270,3 +270,47 @@ def test_get_calendar_matches_display_name_case_insensitively(monkeypatch) -> No
     _, calendar = service._get_calendar()
 
     assert calendar.get_display_name() == "Work"
+
+
+def test_month_euro_uses_default_rate(tmp_path: Path) -> None:
+    service = build_service(tmp_path, FakeCalendarService())
+    service.add_hours(chat_id=10, user_id=20, raw_text="6")
+    result = service.get_month_euro(chat_id=10, user_id=20)
+    assert "30€/h" in result
+    assert "180€" in result
+
+
+def test_month_euro_uses_configured_rate(tmp_path: Path) -> None:
+    service = build_service(tmp_path, FakeCalendarService())
+    service.add_hours(chat_id=10, user_id=20, raw_text="6")
+    service.set_hourly_rate(chat_id=10, user_id=20, rate=35)
+    result = service.get_month_euro(chat_id=10, user_id=20)
+    assert "35€/h" in result
+    assert "210€" in result
+
+
+def test_set_hourly_rate_persists(tmp_path: Path) -> None:
+    service = build_service(tmp_path, FakeCalendarService())
+    result = service.set_hourly_rate(chat_id=10, user_id=20, rate=45)
+    assert "45€/h" in result
+    # Verify it persists in preferences
+    preferences = service.storage.get_chat_preferences(10)
+    assert preferences.hourly_rate == 45.0
+
+
+def test_month_euro_with_fractional_rate(tmp_path: Path) -> None:
+    service = build_service(tmp_path, FakeCalendarService())
+    service.add_hours(chat_id=10, user_id=20, raw_text="2")
+    service.set_hourly_rate(chat_id=10, user_id=20, rate=22.5)
+    result = service.get_month_euro(chat_id=10, user_id=20)
+    assert "22.5€/h" in result
+    assert "45€" in result
+
+
+def test_month_euro_shows_hours_and_calculation(tmp_path: Path) -> None:
+    service = build_service(tmp_path, FakeCalendarService())
+    service.add_hours(chat_id=10, user_id=20, raw_text="2h 30m")
+    result = service.get_month_euro(chat_id=10, user_id=20)
+    assert "2h 30m" in result
+    assert "×" in result
+    assert "=" in result

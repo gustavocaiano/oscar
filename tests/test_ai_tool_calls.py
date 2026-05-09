@@ -379,7 +379,7 @@ def test_ai_client_falls_back_to_streamed_tool_calls_when_non_stream_empty(monke
 
     result = asyncio.run(client.respond(user_message="create task", history=[], tool_snapshot={}))
 
-    assert result.reply == "I prepared a request for confirmation."
+    assert result.reply == "Action ready for confirmation."
     assert result.tool_plan == [{"tool": "tasks", "operation": "create", "args": {"title": "Pay rent"}}]
     assert len(FakeAsyncClient.seen_payloads) == 1
     assert len(FakeAsyncClient.seen_stream_payloads) == 1

@@ -61,7 +61,7 @@ class KbplusTaskClient:
         data = self._request("GET", f"/api/integrations/v1/boards/{self.board_id}/tasks")
         raw_columns = data.get("columns")
         if not isinstance(raw_columns, list):
-            raise KbplusIntegrationError("KB+ task list response did not include columns")
+            raise KbplusIntegrationError("KB+ response missing columns")
 
         columns: list[KbplusColumn] = []
         for raw_column in raw_columns:
@@ -113,7 +113,7 @@ class KbplusTaskClient:
 
     def create_task(self, *, title: str, description: str | None = None) -> KbplusTaskLink:
         if not self.todo_column_id:
-            raise KbplusIntegrationError("KB+ to-do column is not configured")
+            raise KbplusIntegrationError("KB+ to-do column not configured")
         data = self._request(
             "POST",
             f"/api/integrations/v1/boards/{self.board_id}/tasks",
@@ -126,7 +126,7 @@ class KbplusTaskClient:
         task = data.get("task") if isinstance(data, dict) else None
         task_id = str(task.get("id", "")).strip() if isinstance(task, dict) else ""
         if not task_id:
-            raise KbplusIntegrationError("KB+ create task response did not include task.id")
+            raise KbplusIntegrationError("KB+ create task response missing task.id")
         return KbplusTaskLink(task_id=task_id)
 
     def rename_task(self, *, task_id: str, title: str) -> None:
@@ -138,7 +138,7 @@ class KbplusTaskClient:
 
     def complete_task(self, *, task_id: str) -> None:
         if not self.done_column_id:
-            raise KbplusIntegrationError("KB+ done column is not configured")
+            raise KbplusIntegrationError("KB+ done column not configured")
         self._request(
             "POST",
             f"/api/integrations/v1/boards/{self.board_id}/tasks/{task_id}/complete",
@@ -147,7 +147,7 @@ class KbplusTaskClient:
 
     def _request(self, method: str, path: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self.configured:
-            raise KbplusIntegrationError("KB+ integration is not configured")
+            raise KbplusIntegrationError("KB+ not configured")
 
         headers = {
             "Authorization": f"Bearer {self.api_token}",

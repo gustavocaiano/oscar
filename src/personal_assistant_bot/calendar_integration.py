@@ -73,16 +73,16 @@ class CalendarService:
 
     def _get_calendar(self):
         if not self.configured:
-            raise CalendarIntegrationError("Calendar integration is not configured")
+            raise CalendarIntegrationError("Calendar not configured")
         if DAVClient is None:
-            raise CalendarIntegrationError("The 'caldav' package is not installed")
+            raise CalendarIntegrationError("caldav package not installed")
         assert self.url is not None and self.username is not None and self.password is not None
         client = DAVClient(url=self.url, username=self.username, password=self.password)
         try:
             principal = client.principal()
             calendars = principal.get_calendars() if hasattr(principal, "get_calendars") else principal.calendars()
             if not calendars:
-                raise CalendarIntegrationError("No calendars were found for the configured CalDAV account")
+                raise CalendarIntegrationError("No calendars found")
             if self.calendar_name:
                 target_name = self._normalize_calendar_name(self.calendar_name)
                 try:
@@ -97,9 +97,7 @@ class CalendarService:
                     if display_name and self._normalize_calendar_name(display_name) == target_name:
                         logger.info("Resolved CalDAV calendar via display name: %s", display_name)
                         return client, calendar
-                raise CalendarIntegrationError(
-                    f"Calendar '{self.calendar_name}' was not found in the configured CalDAV account"
-                )
+                raise CalendarIntegrationError(f"Calendar '{self.calendar_name}' not found")
             default_name = self._calendar_display_name(calendars[0]) or "first available calendar"
             logger.info("Using default CalDAV calendar: %s", default_name)
             return client, calendars[0]
@@ -140,7 +138,7 @@ class CalendarService:
             )
             return normalized
         except Exception as exc:  # pragma: no cover - exercised via injected fakes in tests
-            raise CalendarIntegrationError(f"Unable to read calendar events: {exc}") from exc
+            raise CalendarIntegrationError(f"Read calendar failed: {exc}") from exc
         finally:
             client.close()
 
@@ -177,6 +175,6 @@ class CalendarService:
                 end_date=end_date,
             )
         except Exception as exc:  # pragma: no cover - exercised via injected fakes in tests
-            raise CalendarIntegrationError(f"Unable to create calendar event: {exc}") from exc
+            raise CalendarIntegrationError(f"Create event failed: {exc}") from exc
         finally:
             client.close()

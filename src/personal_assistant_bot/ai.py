@@ -262,10 +262,10 @@ class OpenAICompatibleAI:
                     if any(not self._is_read_only_tool_call(call) for call in tool_calls):
                         tool_plan, tool_error = self._tool_calls_to_plan(tool_calls)
                         if tool_plan is not None:
-                            reply = content.strip() or "I prepared a request for confirmation."
+                            reply = content.strip() or "Action ready for confirmation."
                             return AIResponse(reply=reply, tool_plan=tool_plan, proposal_error=tool_error)
                         return AIResponse(
-                            reply=content.strip() or "I could not generate a response.",
+                            reply=content.strip() or "Could not generate a response.",
                             proposal_error=tool_error,
                         )
 
@@ -278,7 +278,7 @@ class OpenAICompatibleAI:
                     )
                     allow_tools = False
                 return AIResponse(
-                    reply="I could not complete the web search flow.",
+                    reply="Web search could not be completed.",
                     proposal_error="tool_round_limit",
                 )
         except httpx.TimeoutException as exc:
@@ -478,11 +478,11 @@ class OpenAICompatibleAI:
         parsed = self._parse_json(content)
         if parsed is None:
             return AIResponse(
-                reply=content.strip() or "I could not generate a response.",
+                reply=content.strip() or "Could not generate a response.",
                 proposal_error=tool_error,
             )
 
-        reply = str(parsed.get("reply") or "").strip() or "I processed your message."
+        reply = str(parsed.get("reply") or "").strip() or "Done."
         proposed_action = parsed.get("proposed_action")
         if not isinstance(proposed_action, dict):
             return AIResponse(reply=reply, proposal_error=tool_error)
@@ -496,10 +496,10 @@ class OpenAICompatibleAI:
     def _extract_message(self, payload: dict[str, Any]) -> dict[str, Any]:
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices:
-            raise AIBackendError("The AI backend returned no choices")
+            raise AIBackendError("AI backend returned no choices")
         message = choices[0].get("message")
         if not isinstance(message, dict):
-            raise AIBackendError("The AI backend returned an invalid message payload")
+            raise AIBackendError("AI backend returned invalid message")
         return message
 
     def _extract_content(self, message_payload: dict[str, Any]) -> str:
@@ -641,9 +641,9 @@ class OpenAICompatibleAI:
             operation = str(arguments.get("operation") or "").strip()
             query = str(arguments.get("query") or "").strip()
             if operation != "search":
-                return f"Web search failed: unsupported operation '{operation}'."
+                return f"Web search: unsupported operation '{operation}'."
             if not query:
-                return "Web search failed: missing query."
+                return "Web search: missing query."
             try:
                 result = await search_web(query)
             except Exception as exc:

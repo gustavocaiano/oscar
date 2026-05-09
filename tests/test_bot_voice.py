@@ -206,7 +206,7 @@ def test_voice_handler_rejects_oversized_voice_note(tmp_path: Path) -> None:
 
     asyncio.run(bot.voice_handler(update, FakeContext(bot=FakeBot())))
 
-    assert "longer than 30 seconds" in message.replies[0]["text"]
+    assert "longer than 30s" in message.replies[0]["text"]
 
 
 def test_voice_handler_reports_unavailable_transcription(tmp_path: Path) -> None:

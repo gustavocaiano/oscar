@@ -121,7 +121,7 @@ def test_confirm_approval_executes_same_tool_layer(tmp_path: Path) -> None:
 
     result = service.confirm_approval(chat_id=1, user_id=2, token=pending.token)
 
-    assert "Created task" in result
+    assert "Task" in result and "created" in result
     tasks = service.list_items(chat_id=1, user_id=2, kind="task")
     assert [task.title for task in tasks] == ["Buy apples"]
 
@@ -137,7 +137,7 @@ def test_scheduler_generates_notifications_and_marks_state(tmp_path: Path) -> No
     texts = [notification.text for notification in notifications]
     assert any("Reminder: Call mom" in text for text in texts)
     assert any("Morning briefing" in text for text in texts)
-    assert any("log your hours" in text for text in texts)
+    assert any("log your hours" in text.lower() for text in texts)
     assert any("Evening wrap-up" in text for text in texts)
 
     for notification in notifications:
@@ -180,7 +180,7 @@ def test_confirm_approval_supports_create_calendar_event(tmp_path: Path) -> None
 
     result = service.confirm_approval(chat_id=10, user_id=20, token=pending.token)
 
-    assert result == "Created calendar event: Team sync"
+    assert result == "Event created: Team sync"
     assert calendar.create_calls is not None
     assert len(calendar.create_calls) == 1
     _, _, summary, description = calendar.create_calls[0]
@@ -206,9 +206,9 @@ def test_confirm_approval_supports_multi_action_tool_plan(tmp_path: Path) -> Non
 
     result = service.confirm_approval(chat_id=10, user_id=20, token=pending.token)
 
-    assert "Executed 3 planned action(s)." in result
-    assert "Created task" in result
-    assert "Created reminder" in result
+    assert "Done: 3 action(s" in result
+    assert "Task" in result and "created" in result
+    assert "Reminder" in result and "created" in result
     tasks = service.list_items(chat_id=10, user_id=20, kind="task")
     assert [task.title for task in tasks] == ["Pay rent", "Send invoice"]
     reminders = service.list_reminders(chat_id=10, user_id=20, pending_only=False)
@@ -227,7 +227,7 @@ def test_confirm_approval_supports_delete_note_tool_plan(tmp_path: Path) -> None
 
     result = service.confirm_approval(chat_id=10, user_id=20, token=pending.token)
 
-    assert result == f"Deleted note #{note_id}"
+    assert result == f"Note #{note_id} deleted"
     assert service.list_notes(chat_id=10, user_id=20, limit=10) == []
 
 
@@ -251,7 +251,7 @@ def test_confirm_approval_hides_kbplus_task_id_in_result(tmp_path: Path) -> None
 
     result = service.confirm_approval(chat_id=10, user_id=20, token=pending.token)
 
-    assert result == "Created task."
+    assert result == "Task created."
     assert "remote-" not in result
 
 

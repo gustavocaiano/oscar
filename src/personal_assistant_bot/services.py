@@ -5,6 +5,7 @@ import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
+from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -95,7 +96,7 @@ class AssistantService:
         try:
             naive = datetime.strptime(raw_text.strip(), "%Y-%m-%d %H:%M")
         except ValueError as exc:
-            raise AssistantError("Use datetime format YYYY-MM-DD HH:MM") from exc
+            raise AssistantError("Format: YYYY-MM-DD HH:MM") from exc
         return naive.replace(tzinfo=ZoneInfo(preferences.timezone))
 
     def parse_flexible_local_datetime(
@@ -108,7 +109,7 @@ class AssistantService:
     ) -> datetime:
         stripped = " ".join(raw_text.strip().split())
         if not stripped:
-            raise AssistantError("Please provide a date and time")
+            raise AssistantError("Provide a date and time")
 
         try:
             return self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=stripped)
@@ -140,7 +141,7 @@ class AssistantService:
             try:
                 target_date = datetime.strptime(dated_match.group(1), "%Y-%m-%d").date()
             except ValueError as exc:
-                raise AssistantError("Use date format YYYY-MM-DD") from exc
+                raise AssistantError("Format: YYYY-MM-DD") from exc
             hour = int(dated_match.group(2))
             minute = int(dated_match.group(3) or "0")
             return datetime(
@@ -152,7 +153,7 @@ class AssistantService:
                 tzinfo=timezone_info,
             )
 
-        raise AssistantError("Use 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'")
+        raise AssistantError("Format: 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'")
 
     def parse_time_or_local_datetime(
         self,
@@ -164,7 +165,7 @@ class AssistantService:
     ) -> datetime:
         stripped = " ".join(raw_text.strip().split())
         if not stripped:
-            raise AssistantError("Please provide an end time")
+            raise AssistantError("Provide an end time")
 
         time_only_match = re.fullmatch(r"([01]?\d|2[0-3])(?::([0-5]\d))?", stripped)
         if time_only_match is not None:
@@ -178,14 +179,14 @@ class AssistantService:
             candidate = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=stripped)
 
         if candidate <= anchor_local:
-            raise AssistantError("End time must be after the start time")
+            raise AssistantError("End time must be after start time")
         return candidate
 
     def create_items(self, *, chat_id: int, user_id: int, kind: str, titles: list[str]) -> list[int | str]:
         self.ensure_chat(chat_id=chat_id, user_id=user_id)
         cleaned = [title.strip() for title in titles if title.strip()]
         if not cleaned:
-            raise AssistantError("Please provide at least one item")
+            raise AssistantError("Provide at least one item")
         if kind == "task" and self._kbplus_enabled():
             return [self._create_kbplus_task(title=title) for title in cleaned]
         return [
@@ -255,7 +256,7 @@ class AssistantService:
 
     def rename_item(self, *, chat_id: int, user_id: int, kind: str, item_id: int | str, title: str) -> None:
         if not title.strip():
-            raise AssistantError("Please provide a new title")
+            raise AssistantError("Provide a new title")
         if kind == "task" and self._kbplus_enabled():
             self._rename_kbplus_task(task_id=str(item_id).strip(), title=title)
             return
@@ -264,12 +265,12 @@ class AssistantService:
                 user_id=user_id, chat_id=chat_id, kind=kind, item_id=int(item_id)
             )
             if existing_task is None:
-                raise AssistantError(f"{kind.title()} item #{item_id} was not found")
+                raise AssistantError(f"{kind.title()} #{item_id} not found")
         updated = self.storage.update_list_item(
             user_id=user_id, chat_id=chat_id, kind=kind, item_id=int(item_id), title=title
         )
         if not updated:
-            raise AssistantError(f"{kind.title()} item #{item_id} was not found")
+            raise AssistantError(f"{kind.title()} #{item_id} not found")
 
     def complete_item(self, *, chat_id: int, user_id: int, kind: str, item_id: int | str) -> None:
         if kind == "task" and self._kbplus_enabled():
@@ -280,15 +281,15 @@ class AssistantService:
                 user_id=user_id, chat_id=chat_id, kind=kind, item_id=int(item_id)
             )
             if existing_task is None:
-                raise AssistantError(f"{kind.title()} item #{item_id} was not found")
+                raise AssistantError(f"{kind.title()} #{item_id} not found")
         updated = self.storage.mark_list_item_done(user_id=user_id, chat_id=chat_id, kind=kind, item_id=int(item_id))
         if not updated:
-            raise AssistantError(f"{kind.title()} item #{item_id} was not found")
+            raise AssistantError(f"{kind.title()} #{item_id} not found")
 
     def add_note(self, *, chat_id: int, user_id: int, kind: str, content: str) -> int:
         self.ensure_chat(chat_id=chat_id, user_id=user_id)
         if not content.strip():
-            raise AssistantError("Please provide note content")
+            raise AssistantError("Note content required")
         return self.storage.create_note(user_id=user_id, chat_id=chat_id, kind=kind, content=content)
 
     def list_notes(
@@ -304,7 +305,7 @@ class AssistantService:
 
     def create_reminder(self, *, chat_id: int, user_id: int, due_text: str, message: str) -> int:
         if not message.strip():
-            raise AssistantError("Please provide reminder text")
+            raise AssistantError("Reminder text required")
         due_local = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=due_text)
         due_utc = due_local.astimezone(UTC).isoformat()
         return self.storage.create_reminder(user_id=user_id, chat_id=chat_id, message=message, due_at=due_utc)
@@ -318,7 +319,7 @@ class AssistantService:
             user_id=user_id, chat_id=chat_id, reminder_id=reminder_id, status=status
         )
         if not updated:
-            raise AssistantError(f"Reminder #{reminder_id} was not found")
+            raise AssistantError(f"Reminder #{reminder_id} not found")
 
     def add_hours(self, *, chat_id: int, user_id: int, raw_text: str) -> str:
         preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
@@ -351,7 +352,30 @@ class AssistantService:
             year=now_local.year,
             month=target_month,
         )
-        return f"Month {target_month:02d} subtotal: {format_hours_total(total)}"
+        return f"Month {target_month:02d}: {format_hours_total(total)}"
+
+    DEFAULT_HOURLY_RATE: float = 30.0
+
+    def get_month_euro(self, *, chat_id: int, user_id: int, month: int | None = None) -> str:
+        preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        now_local = self._local_now(preferences)
+        target_month = month or now_local.month
+        total_hours = self.storage.aggregate_month_hours(
+            user_id=user_id,
+            chat_id=chat_id,
+            year=now_local.year,
+            month=target_month,
+        )
+        rate = preferences.hourly_rate if preferences.hourly_rate is not None else self.DEFAULT_HOURLY_RATE
+        earnings = float(total_hours) * rate
+        rate_label = f"{rate:.0f}€/h" if rate == int(rate) else f"{rate}€/h"
+        return f"Month {target_month:02d}: {format_hours_total(total_hours)} × {rate_label} = {earnings:.0f}€"
+
+    def set_hourly_rate(self, *, chat_id: int, user_id: int, rate: float) -> str:
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        self.storage.update_chat_preferences(chat_id, hourly_rate=rate)
+        rate_label = f"{rate:.0f}€/h" if rate == int(rate) else f"{rate}€/h"
+        return f"Hourly rate → {rate_label}"
 
     def list_calendar_events(self, *, chat_id: int, user_id: int, days: int = 7) -> list[CalendarEvent]:
         preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
@@ -389,7 +413,7 @@ class AssistantService:
             days_until_next_monday = 7 - today_start.weekday()
             start_local = today_start + timedelta(days=days_until_next_monday)
             return "Next week", start_local, start_local + timedelta(days=7)
-        raise AssistantError("Window must be one of: today, tomorrow, next7, nextweek")
+        raise AssistantError("Invalid window. Use: today, tomorrow, next7, nextweek")
 
     def render_calendar_window_for_ai(self, *, chat_id: int, user_id: int, window: str) -> str:
         title, start_local, end_local = self.resolve_calendar_window(
@@ -446,7 +470,7 @@ class AssistantService:
     ) -> list[CalendarEvent]:
         self.ensure_chat(chat_id=chat_id, user_id=user_id)
         if not self.calendar.configured:
-            raise AssistantError("Calendar integration is not configured")
+            raise AssistantError("Calendar not configured")
         try:
             return self.calendar.list_events(start=start_local, end=end_local)
         except CalendarIntegrationError as exc:
@@ -480,13 +504,13 @@ class AssistantService:
     ) -> CalendarEvent:
         self.ensure_chat(chat_id=chat_id, user_id=user_id)
         if not self.calendar.configured:
-            raise AssistantError("Calendar integration is not configured")
+            raise AssistantError("Calendar not configured")
         if not summary.strip():
-            raise AssistantError("Please provide a calendar event title")
+            raise AssistantError("Provide a calendar event title")
         start = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=start_text)
         end = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=end_text)
         if end <= start:
-            raise AssistantError("Calendar event end time must be after the start time")
+            raise AssistantError("End time must be after start time")
         try:
             return self.calendar.create_event(start=start, end=end, summary=summary.strip(), description=description)
         except CalendarIntegrationError as exc:
@@ -497,7 +521,7 @@ class AssistantService:
 
     def _create_kbplus_task(self, *, title: str) -> str:
         if not self._kbplus_enabled() or self.kbplus is None:
-            raise AssistantError("KB+ integration is not configured")
+            raise AssistantError("KB+ not configured")
         try:
             task_link = self.kbplus.create_task(title=title)
         except KbplusIntegrationError as exc:
@@ -506,9 +530,9 @@ class AssistantService:
 
     def _rename_kbplus_task(self, *, task_id: str, title: str) -> None:
         if not self._kbplus_enabled() or self.kbplus is None:
-            raise AssistantError("KB+ integration is not configured")
+            raise AssistantError("KB+ not configured")
         if not task_id:
-            raise AssistantError("Please provide a KB+ task id")
+            raise AssistantError("Provide a KB+ task id")
         try:
             self.kbplus.rename_task(task_id=task_id, title=title.strip())
         except KbplusIntegrationError as exc:
@@ -516,9 +540,9 @@ class AssistantService:
 
     def _complete_kbplus_task(self, *, task_id: str) -> None:
         if not self._kbplus_enabled() or self.kbplus is None:
-            raise AssistantError("KB+ integration is not configured")
+            raise AssistantError("KB+ not configured")
         if not task_id:
-            raise AssistantError("Please provide a KB+ task id")
+            raise AssistantError("Provide a KB+ task id")
         try:
             self.kbplus.complete_task(task_id=task_id)
         except KbplusIntegrationError as exc:
@@ -584,7 +608,13 @@ class AssistantService:
                 for item in reminders
             ],
             "notes": [{"id": item.id, "kind": item.kind, "content": item.content} for item in notes],
-            "hours": {"month_total": format_hours_total(month_total)},
+            "hours": {
+                "month_total": format_hours_total(month_total),
+                "month_total_raw": str(month_total),
+                "hourly_rate": preferences.hourly_rate
+                if preferences.hourly_rate is not None
+                else self.DEFAULT_HOURLY_RATE,
+            },
             "agenda_status": agenda_snapshot.status,
             "agenda_error": agenda_snapshot.error,
             "agenda": [
@@ -669,7 +699,7 @@ class AssistantService:
         prompt_text: str,
     ) -> PreparedAction:
         if not steps:
-            raise AssistantError("The pending tool plan is empty")
+            raise AssistantError("Empty tool plan")
         preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
         normalized_actions: list[dict[str, Any]] = []
         for step in steps:
@@ -683,7 +713,7 @@ class AssistantService:
                 )
             )
         if not normalized_actions:
-            raise AssistantError("The pending tool plan does not include executable actions")
+            raise AssistantError("Tool plan has no executable actions")
         custom_prompt = prompt_text.strip()
         if custom_prompt:
             summary = custom_prompt
@@ -723,7 +753,7 @@ class AssistantService:
             if operation == "create":
                 title = str(args.get("title", "")).strip()
                 if not title:
-                    raise AssistantError("Task tool create operation is missing title")
+                    raise AssistantError("Task create: missing title")
                 prepared = self._prepare_action(
                     chat_id=chat_id,
                     user_id=user_id,
@@ -735,7 +765,7 @@ class AssistantService:
             if operation == "create_many":
                 titles = [str(item).strip() for item in args.get("titles", []) if str(item).strip()]
                 if not titles:
-                    raise AssistantError("Task tool create_many operation is missing titles")
+                    raise AssistantError("Task create_many: missing titles")
                 return [
                     {
                         "action_type": prepared.action_type,
@@ -775,7 +805,7 @@ class AssistantService:
             if operation == "create":
                 item = str(args.get("title") or args.get("item") or "").strip()
                 if not item:
-                    raise AssistantError("Shopping tool create operation is missing an item title")
+                    raise AssistantError("Shopping create: missing item title")
                 prepared = self._prepare_action(
                     chat_id=chat_id,
                     user_id=user_id,
@@ -787,7 +817,7 @@ class AssistantService:
             if operation == "create_many":
                 items = [str(item).strip() for item in args.get("titles", []) if str(item).strip()]
                 if not items:
-                    raise AssistantError("Shopping tool create_many operation is missing titles")
+                    raise AssistantError("Shopping create_many: missing titles")
                 prepared = self._prepare_action(
                     chat_id=chat_id,
                     user_id=user_id,
@@ -828,7 +858,7 @@ class AssistantService:
         if tool == "notes" and operation == "delete":
             note_id = args.get("note_id")
             if not note_id:
-                raise AssistantError("Note delete operation is missing note_id")
+                raise AssistantError("Note delete: missing note_id")
             prepared = self._prepare_action(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -876,12 +906,12 @@ class AssistantService:
             )
             return [{"action_type": prepared.action_type, "payload": prepared.payload}]
 
-        raise AssistantError(f"Unsupported tool step: {tool}.{operation}")
+        raise AssistantError(f"Unsupported tool: {tool}.{operation}")
 
     def _execute_tool_plan(self, *, chat_id: int, user_id: int, payload: dict[str, Any]) -> str:
         actions = payload.get("actions")
         if not isinstance(actions, list) or not actions:
-            raise AssistantError("Pending tool plan is missing its actions")
+            raise AssistantError("Tool plan missing actions")
 
         executed: list[str] = []
         failed: list[str] = []
@@ -908,18 +938,18 @@ class AssistantService:
                 failed.append(f"{label} — {exc}")
 
         if failed and executed:
-            lines = [f"Partially executed {len(executed)} of {len(actions)} planned action(s)."]
+            lines = [f"Partial: {len(executed)}/{len(actions)} actions done."]
             lines.extend(f"- {entry}" for entry in executed)
             lines.append("Failed:")
             lines.extend(f"- {entry}" for entry in failed)
             return "\n".join(lines)
         if failed:
-            lines = ["None of the planned actions could be executed.", "Failed:"]
+            lines = ["All actions failed.", "Failed:"]
             lines.extend(f"- {entry}" for entry in failed)
             raise AssistantError("\n".join(lines))
         if len(executed) == 1:
             return executed[0]
-        return "\n".join([f"Executed {len(executed)} planned action(s).", *[f"- {entry}" for entry in executed]])
+        return "\n".join([f"Done: {len(executed)} action(s).", *[f"- {entry}" for entry in executed]])
 
     def _execute_action(self, *, chat_id: int, user_id: int, action_type: str, payload: dict[str, Any]) -> str:
         payload = self._validate_action_payload(
@@ -932,8 +962,8 @@ class AssistantService:
             title = str(payload.get("title", "")).strip()
             item_ids = self.create_items(chat_id=chat_id, user_id=user_id, kind="task", titles=[title])
             if self._kbplus_enabled():
-                return "Created task."
-            return f"Created task #{item_ids[0]}"
+                return "Task created."
+            return f"Task #{item_ids[0]} created"
         if action_type == "add_shopping_items":
             items = [str(item).strip() for item in payload.get("items", []) if str(item).strip()]
             item_ids = self.create_items(chat_id=chat_id, user_id=user_id, kind="shopping", titles=items)
@@ -946,12 +976,12 @@ class AssistantService:
                 kind=payload.get("kind", "note"),
                 content=content,
             )
-            return f"Saved note #{note_id}"
+            return f"Note #{note_id} saved"
         if action_type == "delete_note":
             note_id = int(payload.get("note_id", 0))
             deleted = self.remove_note(chat_id=chat_id, user_id=user_id, note_id=note_id)
             if deleted:
-                return f"Deleted note #{note_id}"
+                return f"Note #{note_id} deleted"
             return f"Note #{note_id} not found"
         if action_type == "create_reminder":
             when_local = str(payload.get("when_local", "")).strip()
@@ -962,7 +992,7 @@ class AssistantService:
                 due_text=when_local,
                 message=message,
             )
-            return f"Created reminder #{reminder_id}"
+            return f"Reminder #{reminder_id} created"
         if action_type == "create_calendar_event":
             event = self.create_calendar_event(
                 chat_id=chat_id,
@@ -976,11 +1006,11 @@ class AssistantService:
                     else None
                 ),
             )
-            return f"Created calendar event: {event.summary}"
+            return f"Event created: {event.summary}"
         if action_type == "rename_list_item":
             item_id = payload.get("item_id")
             if item_id is None:
-                raise AssistantError("Missing item_id")
+                raise AssistantError("Item ID missing")
             self.rename_item(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -990,12 +1020,12 @@ class AssistantService:
             )
             label = "shopping item" if payload["kind"] == "shopping" else "task"
             if payload["kind"] == "task":
-                return "Renamed task."
-            return f"Renamed {label} {payload['item_id']}"
+                return "Task renamed."
+            return f"{label.capitalize()} {payload['item_id']} renamed"
         if action_type == "complete_list_item":
             item_id = payload.get("item_id")
             if item_id is None:
-                raise AssistantError("Missing item_id")
+                raise AssistantError("Item ID missing")
             self.complete_item(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -1004,8 +1034,8 @@ class AssistantService:
             )
             label = "shopping item" if payload["kind"] == "shopping" else "task"
             if payload["kind"] == "task":
-                return "Marked task complete."
-            return f"Marked {label} {payload['item_id']} complete"
+                return "Task done."
+            return f"{label.capitalize()} {payload['item_id']} done"
         if action_type == "update_reminder_status":
             self.update_reminder(
                 chat_id=chat_id,
@@ -1013,26 +1043,26 @@ class AssistantService:
                 reminder_id=int(payload.get("reminder_id", 0)),
                 status=str(payload.get("status", "")).strip(),
             )
-            return f"Reminder #{payload['reminder_id']} marked {payload['status']}"
+            return f"Reminder #{payload['reminder_id']} → {payload['status']}"
 
-        raise AssistantError(f"Unsupported approval action: {action_type}")
+        raise AssistantError(f"Unsupported action: {action_type}")
 
     def confirm_approval(self, *, chat_id: int, user_id: int, token: str) -> str:
         approval = self.storage.get_approval(token=token, user_id=user_id, chat_id=chat_id)
         if approval is None:
-            raise AssistantError("Approval token was not found")
+            raise AssistantError("Token not found")
         if approval.status != "pending":
-            raise AssistantError(f"Approval token is already {approval.status}")
+            raise AssistantError(f"Token already {approval.status}")
         if datetime.fromisoformat(approval.expires_at) < datetime.now(UTC):
             self.storage.transition_approval_status(token=token, expected_status="pending", new_status="expired")
-            raise AssistantError("Approval token has expired")
+            raise AssistantError("Token expired")
         try:
             if not self.storage.transition_approval_status(
                 token=token, expected_status="pending", new_status="executing"
             ):
                 approval = self.storage.get_approval(token=token, user_id=user_id, chat_id=chat_id)
                 current_status = approval.status if approval else "missing"
-                raise AssistantError(f"Approval token is already {current_status}")
+                raise AssistantError(f"Token already {current_status}")
             if approval.action_type == "tool_plan":
                 result = self._execute_tool_plan(chat_id=chat_id, user_id=user_id, payload=approval.payload)
             else:
@@ -1053,12 +1083,12 @@ class AssistantService:
     def reject_approval(self, *, chat_id: int, user_id: int, token: str) -> str:
         approval = self.storage.get_approval(token=token, user_id=user_id, chat_id=chat_id)
         if approval is None:
-            raise AssistantError("Approval token was not found")
+            raise AssistantError("Token not found")
         if not self.storage.transition_approval_status(token=token, expected_status="pending", new_status="rejected"):
             latest = self.storage.get_approval(token=token, user_id=user_id, chat_id=chat_id)
             current_status = latest.status if latest else "missing"
-            raise AssistantError(f"Approval token is already {current_status}")
-        return f"Rejected pending action {token}"
+            raise AssistantError(f"Token already {current_status}")
+        return f"Rejected {token}"
 
     def add_chat_history(self, *, chat_id: int, user_id: int, role: str, content: str) -> None:
         self.storage.add_chat_message(user_id=user_id, chat_id=chat_id, role=role, content=content)
@@ -1121,7 +1151,12 @@ class AssistantService:
             for item in notes[:3]:
                 lines.append(f"  • [{item['kind']}] {item['content'][:70]}")
 
-        lines.append(f"- Month hours: {snapshot['hours']['month_total']}")
+        hours_info = snapshot["hours"]
+        hours_rate = hours_info.get("hourly_rate", self.DEFAULT_HOURLY_RATE)
+        month_hours_str = hours_info["month_total"]
+        month_hours_raw = Decimal(hours_info.get("month_total_raw", "0"))
+        month_euro = float(month_hours_raw) * hours_rate
+        lines.append(f"- Month: {month_hours_str} (~{month_euro:.0f}€)")
 
         if agenda:
             lines.append("- Upcoming calendar:")
@@ -1210,7 +1245,7 @@ class AssistantService:
                 due_notifications.append(
                     ScheduledNotification(
                         chat_id=preferences.chat_id,
-                        text="Reminder: log your hours with /h add <hours> if you worked today.",
+                        text="Log your hours: /h add <hours>",
                         notification_type="hour_reminder",
                         claim_date=local_date,
                         preference_updates={"last_hour_reminder_on": local_date},
@@ -1286,12 +1321,15 @@ class AssistantService:
 
     def get_preferences_summary(self, *, chat_id: int, user_id: int) -> str:
         preferences = self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        rate = preferences.hourly_rate if preferences.hourly_rate is not None else self.DEFAULT_HOURLY_RATE
+        rate_label = f"{rate:.0f}€/h" if rate == int(rate) else f"{rate}€/h"
         return (
             f"Timezone: {preferences.timezone}\n"
-            f"Morning brief: {'on' if preferences.morning_brief_enabled else 'off'} at {preferences.morning_brief_time}\n"
-            f"Hour reminder: {'on' if preferences.hour_reminder_enabled else 'off'} at {preferences.hour_reminder_time}\n"
-            f"Evening wrap-up: {'on' if preferences.evening_wrap_up_enabled else 'off'} at {preferences.evening_wrap_up_time}\n"
-            f"Reminder alerts: {'on' if preferences.reminder_alerts_enabled else 'off'}"
+            f"Morning brief: {'on' if preferences.morning_brief_enabled else 'off'} @ {preferences.morning_brief_time}\n"
+            f"Hour reminder: {'on' if preferences.hour_reminder_enabled else 'off'} @ {preferences.hour_reminder_time}\n"
+            f"Evening wrap-up: {'on' if preferences.evening_wrap_up_enabled else 'off'} @ {preferences.evening_wrap_up_time}\n"
+            f"Reminder alerts: {'on' if preferences.reminder_alerts_enabled else 'off'}\n"
+            f"Hourly rate: {rate_label}"
         )
 
     def update_preference_toggle(self, *, chat_id: int, user_id: int, key: str, enabled: bool) -> str:
@@ -1303,34 +1341,34 @@ class AssistantService:
             "reminders": "reminder_alerts_enabled",
         }
         if key not in mapping:
-            raise AssistantError("Use one of: morning, hours, evening, reminders")
+            raise AssistantError("Choose: morning, hours, evening, reminders")
         self.storage.update_chat_preferences(chat_id, **{mapping[key]: 1 if enabled else 0})
-        return f"Set {key} to {'on' if enabled else 'off'}"
+        return f"{key} → {'on' if enabled else 'off'}"
 
     def update_preference_time(self, *, chat_id: int, user_id: int, key: str, time_value: str) -> str:
         self.ensure_chat(chat_id=chat_id, user_id=user_id)
         try:
             time.fromisoformat(time_value)
         except ValueError as exc:
-            raise AssistantError("Use time format HH:MM") from exc
+            raise AssistantError("Format: HH:MM") from exc
         mapping = {
             "morning": "morning_brief_time",
             "hours": "hour_reminder_time",
             "evening": "evening_wrap_up_time",
         }
         if key not in mapping:
-            raise AssistantError("Use one of: morning, hours, evening")
+            raise AssistantError("Choose: morning, hours, evening")
         self.storage.update_chat_preferences(chat_id, **{mapping[key]: time_value})
-        return f"Updated {key} time to {time_value}"
+        return f"{key} time → {time_value}"
 
     def update_timezone(self, *, chat_id: int, user_id: int, timezone_name: str) -> str:
         self.ensure_chat(chat_id=chat_id, user_id=user_id)
         try:
             ZoneInfo(timezone_name)
         except Exception as exc:  # pragma: no cover - depends on system tz database
-            raise AssistantError("Invalid timezone name") from exc
+            raise AssistantError("Invalid timezone") from exc
         self.storage.update_chat_preferences(chat_id, timezone=timezone_name)
-        return f"Updated timezone to {timezone_name}"
+        return f"Timezone → {timezone_name}"
 
     def _format_utc_iso_for_chat(self, iso_value: str, preferences: ChatPreferences) -> str:
         return self._format_datetime_for_chat(datetime.fromisoformat(iso_value), preferences)
@@ -1382,7 +1420,7 @@ class AssistantService:
         if action_type == "create_task":
             title = str(payload.get("title", "")).strip()
             if not title:
-                raise AssistantError("Pending action is missing a task title")
+                raise AssistantError("Task title missing")
             return {"title": title}
 
         if action_type == "add_shopping_items":
@@ -1394,32 +1432,32 @@ class AssistantService:
             else:
                 items = []
             if not items:
-                raise AssistantError("Pending action is missing shopping items")
+                raise AssistantError("Shopping items missing")
             return {"items": items}
 
         if action_type == "create_note":
             content = str(payload.get("content", "")).strip()
             if not content:
-                raise AssistantError("Pending action is missing note content")
+                raise AssistantError("Note content missing")
             kind = str(payload.get("kind", "note")).strip() or "note"
             if kind not in {"note", "inbox"}:
-                raise AssistantError("Pending note action has an invalid kind")
+                raise AssistantError("Invalid note kind")
             return {"kind": kind, "content": content}
 
         if action_type == "delete_note":
             try:
                 note_id = int(payload.get("note_id", 0))
             except (TypeError, ValueError) as exc:
-                raise AssistantError("Pending note delete action is missing its note id") from exc
+                raise AssistantError("Note ID missing") from exc
             if note_id <= 0:
-                raise AssistantError("Pending note delete action is missing its note id")
+                raise AssistantError("Note ID missing")
             return {"note_id": note_id}
 
         if action_type == "create_reminder":
             when_local = str(payload.get("when_local", "")).strip()
             message = str(payload.get("message", "")).strip()
             if not when_local or not message:
-                raise AssistantError("Pending reminder action is missing its time or message")
+                raise AssistantError("Reminder time or message missing")
             due_local = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=when_local)
             return {
                 "when_local": due_local.strftime("%Y-%m-%d %H:%M"),
@@ -1428,16 +1466,16 @@ class AssistantService:
 
         if action_type == "create_calendar_event":
             if not self.calendar.configured:
-                raise AssistantError("Calendar integration is not configured")
+                raise AssistantError("Calendar not configured")
             summary = str(payload.get("summary") or payload.get("title") or "").strip()
             start_text = str(payload.get("start_local", "")).strip()
             end_text = str(payload.get("end_local", "")).strip()
             if not summary or not start_text or not end_text:
-                raise AssistantError("Pending calendar action is missing its title, start time, or end time")
+                raise AssistantError("Calendar action missing title, start, or end time")
             start_local = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=start_text)
             end_local = self.parse_local_datetime(chat_id=chat_id, user_id=user_id, raw_text=end_text)
             if end_local <= start_local:
-                raise AssistantError("Calendar event end time must be after the start time")
+                raise AssistantError("End time must be after start time")
             raw_description = payload.get("description")
             description = str(raw_description).strip() if raw_description is not None else None
             if description == "":
@@ -1452,53 +1490,53 @@ class AssistantService:
         if action_type == "rename_list_item":
             kind = str(payload.get("kind", "")).strip()
             if kind not in {"task", "shopping"}:
-                raise AssistantError("Pending list-item rename action has an invalid kind")
+                raise AssistantError("Invalid item kind")
             raw_item_id = payload.get("item_id")
             if kind == "task":
                 item_id: int | str = str(raw_item_id or "").strip()
                 if not item_id:
-                    raise AssistantError("Pending list-item rename action is missing its item id")
+                    raise AssistantError("Item ID missing")
             else:
                 try:
                     item_id = int(raw_item_id or 0)
                 except (TypeError, ValueError) as exc:
-                    raise AssistantError("Pending list-item rename action is missing its item id") from exc
+                    raise AssistantError("Item ID missing") from exc
                 if item_id <= 0:
-                    raise AssistantError("Pending list-item rename action is missing its item id")
+                    raise AssistantError("Item ID missing")
             title = str(payload.get("title", "")).strip()
             if not title:
-                raise AssistantError("Pending list-item rename action is missing its item id or title")
+                raise AssistantError("Item ID or title missing")
             return {"kind": kind, "item_id": item_id, "title": title}
 
         if action_type == "complete_list_item":
             kind = str(payload.get("kind", "")).strip()
             if kind not in {"task", "shopping"}:
-                raise AssistantError("Pending list-item completion action has an invalid kind")
+                raise AssistantError("Invalid item kind")
             raw_item_id = payload.get("item_id")
             if kind == "task":
                 item_id = str(raw_item_id or "").strip()
                 if not item_id:
-                    raise AssistantError("Pending list-item completion action is missing its item id")
+                    raise AssistantError("Item ID missing")
             else:
                 try:
                     item_id = int(raw_item_id or 0)
                 except (TypeError, ValueError) as exc:
-                    raise AssistantError("Pending list-item completion action is missing its item id") from exc
+                    raise AssistantError("Item ID missing") from exc
                 if item_id <= 0:
-                    raise AssistantError("Pending list-item completion action is missing its item id")
+                    raise AssistantError("Item ID missing")
             return {"kind": kind, "item_id": item_id}
 
         if action_type == "update_reminder_status":
             try:
                 reminder_id = int(payload.get("reminder_id", 0))
             except (TypeError, ValueError) as exc:
-                raise AssistantError("Pending reminder update action is missing its reminder id") from exc
+                raise AssistantError("Reminder ID missing") from exc
             status = str(payload.get("status", "")).strip()
             if reminder_id <= 0 or status not in {"done", "cancelled"}:
-                raise AssistantError("Pending reminder update action is missing its reminder id or status")
+                raise AssistantError("Reminder ID or status missing")
             return {"reminder_id": reminder_id, "status": status}
 
-        raise AssistantError(f"Unsupported approval action: {action_type}")
+        raise AssistantError(f"Unsupported action: {action_type}")
 
     def _build_action_prompt(
         self,
@@ -1517,25 +1555,23 @@ class AssistantService:
         if action_type == "create_task":
             return f"Create task: {payload['title']}"
         if action_type == "add_shopping_items":
-            return f"Add shopping items: {', '.join(payload['items'])}"
+            return f"Add to shopping: {', '.join(payload['items'])}"
         if action_type == "create_note":
             return f"Save {payload['kind']}: {payload['content']}"
         if action_type == "delete_note":
             return f"Delete note #{payload['note_id']}"
         if action_type == "create_reminder":
-            return f'Create reminder: "{payload["message"]}" @ {payload["when_local"]} ({preferences.timezone})'
+            return f'Reminder: "{payload["message"]}" @ {payload["when_local"]} ({preferences.timezone})'
         if action_type == "create_calendar_event":
             start_label = payload["start_local"]
             end_label = payload["end_local"]
-            return (
-                f'Create calendar event: "{payload["summary"]}" @ {start_label} to {end_label} ({preferences.timezone})'
-            )
+            return f'Event: "{payload["summary"]}" @ {start_label} to {end_label} ({preferences.timezone})'
         if action_type == "rename_list_item":
             label = "shopping item" if payload["kind"] == "shopping" else "task"
-            return f"Rename {label} {payload['item_id']} to: {payload['title']}"
+            return f"Rename {label} {payload['item_id']} → {payload['title']}"
         if action_type == "complete_list_item":
             label = "shopping item" if payload["kind"] == "shopping" else "task"
-            return f"Mark {label} {payload['item_id']} complete"
+            return f"Complete {label} {payload['item_id']}"
         if action_type == "update_reminder_status":
-            return f"Mark reminder #{payload['reminder_id']} {payload['status']}"
+            return f"Reminder #{payload['reminder_id']} → {payload['status']}"
         return custom_prompt or action_type

@@ -56,7 +56,7 @@ ROOT_COMMANDS = [
     BotCommand("note", "Notes and inbox commands"),
     BotCommand("rem", "Reminder commands"),
     BotCommand("cal", "Calendar commands"),
-    BotCommand("h", "Hour tracking commands"),
+    BotCommand("h", "Hour tracking + earnings"),
     BotCommand("pref", "Preference commands"),
     BotCommand("cancel", "Cancel current interactive flow"),
     BotCommand("confirm", "Confirm a pending AI action"),
@@ -143,7 +143,7 @@ class PersonalAssistantBot:
         chat_id, user_id = self._chat_and_user(update)
         if not context.args:
             await msg.reply_text(
-                "Use /note add <text>, /note inbox <text>, /note list [count], /note search <query>, or /note delete <id>."
+                "Commands: /note add <text> · /note inbox <text> · /note list · /note search <query> · /note delete <id>"
             )
             return
         subcommand = context.args[0].lower()
@@ -151,13 +151,13 @@ class PersonalAssistantBot:
         try:
             if subcommand == "add":
                 note_id = self.assistant.add_note(chat_id=chat_id, user_id=user_id, kind="note", content=" ".join(rest))
-                await msg.reply_text(f"Saved note #{note_id}")
+                await msg.reply_text(f"Note #{note_id} saved")
                 return
             if subcommand == "inbox":
                 note_id = self.assistant.add_note(
                     chat_id=chat_id, user_id=user_id, kind="inbox", content=" ".join(rest)
                 )
-                await msg.reply_text(f"Saved inbox item #{note_id}")
+                await msg.reply_text(f"Inbox #{note_id} saved")
                 return
             if subcommand == "list":
                 limit = int(rest[0]) if rest and rest[0].isdigit() else 10
@@ -189,7 +189,7 @@ class PersonalAssistantBot:
         chat_id, user_id = self._chat_and_user(update)
         if not context.args:
             await msg.reply_text(
-                "Use /rem add to start an interactive reminder, or /rem add YYYY-MM-DD HH:MM | text as a shortcut. /rem list, /rem done <id>, and /rem cancel <id> still work."
+                "Commands: /rem add [YYYY-MM-DD HH:MM | text] · /rem list · /rem done <id> · /rem cancel <id>"
             )
             return
         subcommand = context.args[0].lower()
@@ -228,7 +228,7 @@ class PersonalAssistantBot:
                 reminder_id = int(context.args[1])
                 status = "done" if subcommand == "done" else "cancelled"
                 self.assistant.update_reminder(chat_id=chat_id, user_id=user_id, reminder_id=reminder_id, status=status)
-                await msg.reply_text(f"Reminder #{reminder_id} marked {status}")
+                await msg.reply_text(f"Reminder #{reminder_id} → {status}")
                 return
             raise AssistantError("Unknown /rem subcommand")
         except (AssistantError, ValueError) as exc:
@@ -241,7 +241,7 @@ class PersonalAssistantBot:
         chat_id, user_id = self._chat_and_user(update)
         if not context.args:
             await msg.reply_text(
-                "Use /cal today, /cal tomorrow, /cal next7, /cal list [days], or /cal add to start an interactive event. Shortcut: /cal add YYYY-MM-DD HH:MM | YYYY-MM-DD HH:MM | title [| description]."
+                "Commands: /cal today · /cal tomorrow · /cal next7 · /cal list [days] · /cal add [start | end | title]"
             )
             return
         subcommand = context.args[0].lower()
@@ -309,7 +309,7 @@ class PersonalAssistantBot:
         msg = self._msg(update)
         chat_id, user_id = self._chat_and_user(update)
         if not context.args:
-            await msg.reply_text("Use /h add <hours> or /h month [MM].")
+            await msg.reply_text("Commands: /h add <hours> · /h month [MM] · /h euro · /h config <rate>")
             return
         subcommand = context.args[0].lower()
         try:
@@ -323,6 +323,17 @@ class PersonalAssistantBot:
                     month = parse_getmm(context.args[1]) if context.args[1].startswith("get") else int(context.args[1])
                 await msg.reply_text(self.assistant.get_month_hours(chat_id=chat_id, user_id=user_id, month=month))
                 return
+            if subcommand == "euro":
+                await msg.reply_text(self.assistant.get_month_euro(chat_id=chat_id, user_id=user_id))
+                return
+            if subcommand == "config":
+                if len(context.args) < 2:
+                    raise AssistantError("Use /h config <rate> (e.g. /h config 35)")
+                rate = float(context.args[1])
+                if rate <= 0:
+                    raise AssistantError("Hourly rate must be positive")
+                await msg.reply_text(self.assistant.set_hourly_rate(chat_id=chat_id, user_id=user_id, rate=rate))
+                return
             raise AssistantError("Unknown /h subcommand")
         except (AssistantError, ValueError) as exc:
             await msg.reply_text(str(exc))
@@ -334,7 +345,7 @@ class PersonalAssistantBot:
         chat_id, user_id = self._chat_and_user(update)
         if not context.args:
             await msg.reply_text(
-                "Use /pref show, /pref enable <morning|hours|evening|reminders>, /pref disable <...>, /pref time <morning|hours|evening> HH:MM, or /pref timezone <Zone>"
+                "Commands: /pref show · /pref enable <morning|hours|evening|reminders> · /pref disable <...> · /pref time <...> HH:MM · /pref timezone <Zone>"
             )
             return
         subcommand = context.args[0].lower()
@@ -386,10 +397,10 @@ class PersonalAssistantBot:
         chat_id, user_id = self._chat_and_user(update)
         draft = self._pop_draft(chat_id=chat_id, user_id=user_id)
         if draft is None:
-            await msg.reply_text("No interactive reminder or calendar flow is active.")
+            await msg.reply_text("No active flow to cancel.")
             return
         label = "reminder" if draft.flow_type == "reminder_create" else "calendar event"
-        await msg.reply_text(f"Cancelled the current {label} flow.")
+        await msg.reply_text(f"{label.title()} flow cancelled.")
 
     async def confirm_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._ensure_access(update):
@@ -397,7 +408,7 @@ class PersonalAssistantBot:
         msg = self._msg(update)
         chat_id, user_id = self._chat_and_user(update)
         if not context.args:
-            await msg.reply_text("Use /confirm <token>")
+            await msg.reply_text("Usage: /confirm <token>")
             return
         try:
             result = self.assistant.confirm_approval(chat_id=chat_id, user_id=user_id, token=context.args[0])
@@ -411,7 +422,7 @@ class PersonalAssistantBot:
         msg = self._msg(update)
         chat_id, user_id = self._chat_and_user(update)
         if not context.args:
-            await msg.reply_text("Use /reject <token>")
+            await msg.reply_text("Usage: /reject <token>")
             return
         try:
             result = self.assistant.reject_approval(chat_id=chat_id, user_id=user_id, token=context.args[0])
@@ -427,15 +438,15 @@ class PersonalAssistantBot:
 
         action_token = self._parse_approval_callback_data(query.data)
         if action_token is None:
-            await query.answer("Invalid approval action.", show_alert=True)
+            await query.answer("Invalid action.", show_alert=True)
             return
 
         action, token = action_token
         if update.effective_chat is None or update.effective_user is None:
-            await query.answer("This approval request is missing chat context.", show_alert=True)
+            await query.answer("Missing chat context.", show_alert=True)
             return
         if self.settings.allowed_chat_ids and update.effective_chat.id not in self.settings.allowed_chat_ids:
-            await query.answer("This bot is not enabled for this chat.", show_alert=True)
+            await query.answer("Bot not enabled for this chat.", show_alert=True)
             return
 
         try:
@@ -457,7 +468,7 @@ class PersonalAssistantBot:
             await query.answer(str(exc), show_alert=True)
             return
 
-        await query.answer("Action processed.")
+        await query.answer("Done.")
         if query.message is not None:
             await query.edit_message_text(final_text)
 
@@ -507,9 +518,7 @@ class PersonalAssistantBot:
         if not await self._ensure_access(update):
             return
         msg = self._msg(update)
-        await msg.reply_text(
-            "Only Telegram voice notes are supported for local transcription right now. Normal audio files are not yet supported."
-        )
+        await msg.reply_text("Only Telegram voice notes are supported. Audio files are not yet supported.")
 
     async def chat_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._ensure_access(update):
@@ -552,7 +561,7 @@ class PersonalAssistantBot:
             return
 
         if not self.ai_client.configured:
-            unavailable_text = "AI chat is not configured yet. Deterministic commands still work."
+            unavailable_text = "AI chat not configured. Commands still work."
             await message.reply_text(self._prepend_transcript_feedback(unavailable_text, transcript_feedback))
             return
 
@@ -650,7 +659,7 @@ class PersonalAssistantBot:
     async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Unhandled bot error", exc_info=context.error)
         if isinstance(update, Update) and update.effective_message is not None:
-            await update.effective_message.reply_text("An unexpected error occurred.")
+            await update.effective_message.reply_text("Something went wrong.")
 
     async def _handle_list_root(self, update: Update, context: ContextTypes.DEFAULT_TYPE, *, kind: str) -> None:
         msg = self._msg(update)
@@ -661,8 +670,9 @@ class PersonalAssistantBot:
             identifier_hint = "<id>"
             if kind == "task":
                 identifier_hint = "<number-or-id>"
+            cmd = "shop" if kind == "shopping" else "task"
             await msg.reply_text(
-                f"Use /{'shop' if kind == 'shopping' else 'task'} add <text>, /{'shop' if kind == 'shopping' else 'task'} list, /{'shop' if kind == 'shopping' else 'task'} {action_word} {identifier_hint}, or /{'shop' if kind == 'shopping' else 'task'} rename {identifier_hint} | <new title>."
+                f"Commands: /{cmd} add <text> · /{cmd} list · /{cmd} {action_word} {identifier_hint} · /{cmd} rename {identifier_hint} | <new title>"
             )
             return
 
@@ -697,7 +707,7 @@ class PersonalAssistantBot:
                 item_label = raw_reference if kind == "task" else str(item_identifier)
                 if kind == "shopping":
                     item_label = f"#{item_label}"
-                await msg.reply_text(f"Marked {singular} {item_label} complete")
+                await msg.reply_text(f"{singular.capitalize()} {item_label} done")
                 return
             if subcommand == "rename":
                 if len(context.args) < 2:
@@ -721,9 +731,9 @@ class PersonalAssistantBot:
                 item_label = raw_reference if kind == "task" else str(item_identifier)
                 if kind == "shopping":
                     item_label = f"#{item_label}"
-                await msg.reply_text(f"Renamed {singular} {item_label}")
+                await msg.reply_text(f"{singular.capitalize()} {item_label} renamed")
                 return
-            raise AssistantError(f"Unknown /{'shop' if kind == 'shopping' else 'task'} subcommand")
+            raise AssistantError(f"Unknown /{cmd} subcommand")
         except (AssistantError, ValueError) as exc:
             await msg.reply_text(str(exc))
 
@@ -733,7 +743,7 @@ class PersonalAssistantBot:
         if not self.settings.allowed_chat_ids or update.effective_chat.id in self.settings.allowed_chat_ids:
             return True
         if update.effective_message is not None:
-            await update.effective_message.reply_text("This bot is not enabled for this chat.")
+            await update.effective_message.reply_text("Bot not enabled for this chat.")
         return False
 
     def _chat_and_user(self, update: Update) -> tuple[int, int]:
@@ -775,10 +785,7 @@ class PersonalAssistantBot:
                 source=source,
                 expires_at=self._draft_expiry(),
             )
-            return (
-                f"Reminder text: {message.strip()}\n"
-                "When should I remind you? Reply with something like 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'. Use /cancel to stop."
-            )
+            return f"Reminder: {message.strip()}\nWhen? Reply 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'. /cancel to stop."
 
         self._drafts[self._draft_key(chat_id=chat_id, user_id=user_id)] = DraftState(
             flow_type="reminder_create",
@@ -787,7 +794,7 @@ class PersonalAssistantBot:
             source=source,
             expires_at=self._draft_expiry(),
         )
-        return "What should I remind you about? Use /cancel to stop."
+        return "Remind you about what? /cancel to stop."
 
     def _start_calendar_draft(self, *, chat_id: int, user_id: int, title: str | None, source: str) -> str:
         if title:
@@ -798,10 +805,7 @@ class PersonalAssistantBot:
                 source=source,
                 expires_at=self._draft_expiry(),
             )
-            return (
-                f"Event title: {title.strip()}\n"
-                "When does it start? Reply with something like 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'. Use /cancel to stop."
-            )
+            return f"Event: {title.strip()}\nStart time? Reply 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'. /cancel to stop."
 
         self._drafts[self._draft_key(chat_id=chat_id, user_id=user_id)] = DraftState(
             flow_type="calendar_create",
@@ -810,12 +814,12 @@ class PersonalAssistantBot:
             source=source,
             expires_at=self._draft_expiry(),
         )
-        return "What is the event title? Use /cancel to stop."
+        return "Event title? /cancel to stop."
 
     def _start_note_delete_draft(self, *, chat_id: int, user_id: int, source: str) -> str:
         notes = self.assistant.list_notes(chat_id=chat_id, user_id=user_id, limit=8)
         if not notes:
-            return "You don't have any notes or inbox items to delete."
+            return "No notes to delete."
 
         self._drafts[self._draft_key(chat_id=chat_id, user_id=user_id)] = DraftState(
             flow_type="note_delete",
@@ -824,31 +828,19 @@ class PersonalAssistantBot:
             source=source,
             expires_at=self._draft_expiry(),
         )
-        return f"Reply with the note ID to delete, like 12. Use /cancel to stop.\n\n{self._format_notes(notes)}"
+        return f"Reply with the note ID to delete (e.g. 12). /cancel to stop.\n\n{self._format_notes(notes)}"
 
     def _start_fallback_draft(self, *, chat_id: int, user_id: int, flow_type: str) -> str:
         if flow_type == "reminder_create":
             prompt = self._start_reminder_draft(chat_id=chat_id, user_id=user_id, message=None, source="ai")
-            return (
-                "I understood this as a reminder request, but I couldn't prepare the confirmation yet. "
-                "Let's do it step by step.\n\n"
-                f"{prompt}"
-            )
+            return f"Got it as a reminder request. Let's set it up step by step.\n\n{prompt}"
         if flow_type == "note_delete":
             prompt = self._start_note_delete_draft(chat_id=chat_id, user_id=user_id, source="ai")
-            if prompt == "You don't have any notes or inbox items to delete.":
+            if prompt == "No notes to delete.":
                 return prompt
-            return (
-                "I understood this as a note deletion request, but I couldn't prepare the confirmation yet. "
-                "Let's do it step by step.\n\n"
-                f"{prompt}"
-            )
+            return f"Got it as a note deletion request. Let's do it step by step.\n\n{prompt}"
         prompt = self._start_calendar_draft(chat_id=chat_id, user_id=user_id, title=None, source="ai")
-        return (
-            "I understood this as a calendar event request, but I couldn't prepare the confirmation yet. "
-            "Let's do it step by step.\n\n"
-            f"{prompt}"
-        )
+        return f"Got it as a calendar event request. Let's set it up step by step.\n\n{prompt}"
 
     async def _continue_draft(
         self,
@@ -865,9 +857,7 @@ class PersonalAssistantBot:
                 if draft.step == "message":
                     draft.payload["message"] = user_message.strip()
                     draft.step = "when_local"
-                    await message.reply_text(
-                        "When should I remind you? Reply with something like 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'. Use /cancel to stop."
-                    )
+                    await message.reply_text("When? Reply 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'. /cancel to stop.")
                     return
 
                 if draft.step == "when_local":
@@ -894,7 +884,7 @@ class PersonalAssistantBot:
                     draft.payload["summary"] = user_message.strip()
                     draft.step = "start_local"
                     await message.reply_text(
-                        "When does it start? Reply with something like 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'. Use /cancel to stop."
+                        "Start time? Reply 'tomorrow 20:00' or 'YYYY-MM-DD HH:MM'. /cancel to stop."
                     )
                     return
 
@@ -906,9 +896,7 @@ class PersonalAssistantBot:
                     )
                     draft.payload["start_local"] = start_local.strftime("%Y-%m-%d %H:%M")
                     draft.step = "end_local"
-                    await message.reply_text(
-                        "When does it end? Reply with HH:MM or YYYY-MM-DD HH:MM. Use /cancel to stop."
-                    )
+                    await message.reply_text("End time? Reply HH:MM or YYYY-MM-DD HH:MM. /cancel to stop.")
                     return
 
                 if draft.step == "end_local":
@@ -959,13 +947,11 @@ class PersonalAssistantBot:
             return
 
         self._pop_draft(chat_id=chat_id, user_id=user_id)
-        await message.reply_text("The interactive flow expired or became invalid. Please start again.")
+        await message.reply_text("Flow expired. Please start again.")
 
     def _approval_message(self, approval: PendingApproval) -> str:
         return (
-            "Please confirm this request.\n\n"
-            f"Proposed action: {approval.prompt_text}\n"
-            f"Use the buttons below, or fallback to /confirm {approval.token} / /reject {approval.token}."
+            f"Confirm: {approval.prompt_text}\n\nButtons below, or /confirm {approval.token} / /reject {approval.token}"
         )
 
     def _calendar_window(
@@ -981,7 +967,7 @@ class PersonalAssistantBot:
             window=window,
         )
         if window == "today":
-            return "Today's events", start_local, end_local
+            return "Today", start_local, end_local
         return title, start_local, end_local
 
     async def _execute_ai_read_only_tool_call(
@@ -1015,8 +1001,8 @@ class PersonalAssistantBot:
         events = list(events)
         if not events:
             if title == "Upcoming events":
-                return "No upcoming events found."
-            return f"No events found for {title.lower()}."
+                return "No upcoming events."
+            return f"No events for {title.lower()}."
 
         preferences = self.assistant.ensure_chat(chat_id=chat_id, user_id=user_id)
         timezone_info = ZoneInfo(preferences.timezone)
@@ -1090,10 +1076,10 @@ class PersonalAssistantBot:
     def _parse_note_id(self, user_message: str) -> int:
         match = re.search(r"#?(\d+)", user_message)
         if match is None:
-            raise AssistantError("Please reply with the note ID to delete, like 12. Use /cancel to stop.")
+            raise AssistantError("Reply with the note ID to delete (e.g. 12). /cancel to stop.")
         note_id = int(match.group(1))
         if note_id <= 0:
-            raise AssistantError("Please reply with the note ID to delete, like 12. Use /cancel to stop.")
+            raise AssistantError("Reply with the note ID to delete (e.g. 12). /cancel to stop.")
         return note_id
 
     def _recover_approval_from_history(
@@ -1107,7 +1093,7 @@ class PersonalAssistantBot:
             if getattr(item, "role", None) != "assistant":
                 continue
             content = str(getattr(item, "content", ""))
-            if content.startswith("Please confirm this "):
+            if content.startswith("Confirm: "):
                 continue
             reminder_match = re.search(
                 r'reminder[^\n]*"(?P<message>[^"]+)"[^\d]*(?P<when>\d{4}-\d{2}-\d{2} \d{2}:\d{2})',
@@ -1134,7 +1120,7 @@ class PersonalAssistantBot:
 
     def _help_text(self) -> str:
         return (
-            "Personal assistant commands:\n\n"
+            "Commands:\n\n"
             "/task add Buy milk\n"
             "/task list\n"
             "/task done 3\n"
@@ -1156,12 +1142,14 @@ class PersonalAssistantBot:
             "/cal add 2026-04-01 14:00 | 2026-04-01 15:00 | Dentist\n"
             "/h add 2h 30m\n"
             "/h month 04\n"
+            "/h euro\n"
+            "/h config 35\n"
             "/pref show\n"
             "/cancel\n"
-            "AI approval buttons are shown automatically; /confirm TOKEN and /reject TOKEN remain as fallback.\n\n"
-            "/task list shows numbered tasks. Use those numbers with /task rename or /task done. If KB+ is enabled, tasks stay grouped by KB+ columns and non-numeric raw task ids still work for compatibility.\n\n"
-            "You can also send a Telegram voice note and, if local speech-to-text is enabled, the assistant will transcribe it and process it like a normal message.\n\n"
-            "If you send a normal message, the assistant uses AI chat mode, can inspect your assistant data, and asks before writing changes."
+            "AI approval buttons appear automatically; /confirm TOKEN and /reject TOKEN as fallback.\n\n"
+            "/task list shows numbered tasks. Use those numbers with /task rename or /task done.\n\n"
+            "Send a voice note for transcription (if STT is enabled).\n\n"
+            "Send any text to enter AI chat mode — it reads your data and asks before writing changes."
         )
 
     def _build_approval_keyboard(self, approval: PendingApproval) -> InlineKeyboardMarkup:
@@ -1184,9 +1172,9 @@ class PersonalAssistantBot:
 
     def _validate_voice_note_limits(self, voice: Voice) -> str | None:
         if voice.duration > self.settings.stt_max_duration_seconds:
-            return f"Voice notes longer than {self.settings.stt_max_duration_seconds} seconds are not supported on this server."
-        if voice.file_size is not None and voice.file_size > self.settings.stt_max_file_size_mb * 1024 * 1024:
-            return f"Voice notes larger than {self.settings.stt_max_file_size_mb} MB are not supported on this server."
+            return f"Voice notes longer than {self.settings.stt_max_duration_seconds}s are not supported."
+            if voice.file_size is not None and voice.file_size > self.settings.stt_max_file_size_mb * 1024 * 1024:
+                return f"Voice notes larger than {self.settings.stt_max_file_size_mb} MB are not supported."
         return None
 
     async def _download_and_transcribe_voice_note(self, message, context: ContextTypes.DEFAULT_TYPE):
@@ -1208,7 +1196,7 @@ class PersonalAssistantBot:
             downloaded_size = audio_path.stat().st_size
             if downloaded_size > self.settings.stt_max_file_size_mb * 1024 * 1024:
                 raise SpeechToTextFailedError(
-                    f"Voice notes larger than {self.settings.stt_max_file_size_mb} MB are not supported on this server."
+                    f"Voice notes larger than {self.settings.stt_max_file_size_mb} MB are not supported."
                 )
             transcript = await self.transcriber.transcribe_file(audio_path)
             downloaded_path = Path(audio_path)
@@ -1275,7 +1263,7 @@ class PersonalAssistantBot:
     def _format_notes(self, notes: Iterable[NoteItem]) -> str:
         notes = list(notes)
         if not notes:
-            return "No notes found."
+            return "No notes."
         lines = ["Notes:"]
         for note in notes:
             lines.append(f"- #{note.id} [{note.kind}] {note.content}")
@@ -1284,7 +1272,7 @@ class PersonalAssistantBot:
     def _format_reminders(self, reminders: Iterable[ReminderItem], chat_id: int, user_id: int) -> str:
         reminders = list(reminders)
         if not reminders:
-            return "No reminders found."
+            return "No reminders."
         preferences = self.assistant.ensure_chat(chat_id=chat_id, user_id=user_id)
         lines = ["Reminders:"]
         for reminder in reminders:

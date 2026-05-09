@@ -200,7 +200,7 @@ class FakeAssistant:
 
     def confirm_approval(self, *, chat_id: int, user_id: int, token: str) -> str:
         self.confirm_calls.append((chat_id, user_id, token))
-        return "Created task."
+        return "Task created."
 
     def reject_approval(self, *, chat_id: int, user_id: int, token: str) -> str:
         self.reject_calls.append((chat_id, user_id, token))
@@ -277,7 +277,7 @@ def test_task_done_resolves_numeric_reference_for_kbplus(tmp_path: Path) -> None
     asyncio.run(bot.task_handler(update, FakeContext(bot=FakeBot(), args=["done", "2"])))
 
     assert assistant.completed_calls == [(10, 20, "task", "tsk_2")]
-    assert message.replies[0]["text"] == "Marked task 2 complete"
+    assert message.replies[0]["text"] == "Task 2 done"
 
 
 def test_task_done_resolves_numeric_reference_for_local_tasks(tmp_path: Path) -> None:
@@ -312,7 +312,7 @@ def test_task_done_resolves_numeric_reference_for_local_tasks(tmp_path: Path) ->
     asyncio.run(bot.task_handler(update, FakeContext(bot=FakeBot(), args=["done", "2"])))
 
     assert assistant.completed_calls == [(10, 20, "task", "77")]
-    assert message.replies[0]["text"] == "Marked task 2 complete"
+    assert message.replies[0]["text"] == "Task 2 done"
 
 
 def test_task_rename_resolves_numeric_reference_for_kbplus(tmp_path: Path) -> None:
@@ -326,7 +326,7 @@ def test_task_rename_resolves_numeric_reference_for_kbplus(tmp_path: Path) -> No
     asyncio.run(bot.task_handler(update, FakeContext(bot=FakeBot(), args=["rename", "1", "|", "Buy green apples"])))
 
     assert assistant.renamed_calls == [(10, 20, "task", "tsk_1", "Buy green apples")]
-    assert message.replies[0]["text"] == "Renamed task 1"
+    assert message.replies[0]["text"] == "Task 1 renamed"
 
 
 def test_task_done_keeps_raw_non_numeric_identifier_compatible(tmp_path: Path) -> None:
@@ -340,7 +340,7 @@ def test_task_done_keeps_raw_non_numeric_identifier_compatible(tmp_path: Path) -
     asyncio.run(bot.task_handler(update, FakeContext(bot=FakeBot(), args=["done", "tsk_2"])))
 
     assert assistant.completed_calls == [(10, 20, "task", "tsk_2")]
-    assert message.replies[0]["text"] == "Marked task tsk_2 complete"
+    assert message.replies[0]["text"] == "Task tsk_2 done"
 
 
 class FakeSpeechToText:
@@ -368,8 +368,8 @@ def test_chat_handler_sends_inline_approval_buttons(tmp_path: Path) -> None:
     assert len(message.replies) == 1
     reply = message.replies[0]
     assert "I can do that for:" not in reply["text"]
-    assert reply["text"].startswith("Please confirm this request.")
-    assert "Proposed action: 2 planned actions" in reply["text"]
+    assert reply["text"].startswith("Confirm:")
+    assert "2 planned actions" in reply["text"]
     markup = reply["reply_markup"]
     assert markup is not None
     first_row = markup.inline_keyboard[0]
@@ -393,9 +393,7 @@ def test_chat_handler_note_delete_fallback_creates_confirmation_after_id_reply(t
     asyncio.run(bot.chat_handler(first_update, context))
 
     assert len(first_message.replies) == 1
-    assert first_message.replies[0]["text"].startswith(
-        "I understood this as a note deletion request, but I couldn't prepare the confirmation yet."
-    )
+    assert first_message.replies[0]["text"].startswith("Got it as a note deletion request.")
     assert "#7 [note] Buy milk" in first_message.replies[0]["text"]
 
     second_message = FakeMessage(text="#7")
@@ -410,7 +408,7 @@ def test_chat_handler_note_delete_fallback_creates_confirmation_after_id_reply(t
         "payload": {"note_id": 7},
         "prompt_text": "",
     }
-    assert second_message.replies[0]["text"].startswith("Please confirm this request.")
+    assert second_message.replies[0]["text"].startswith("Confirm:")
 
 
 def test_approval_callback_handler_confirms_action(tmp_path: Path) -> None:
@@ -429,8 +427,8 @@ def test_approval_callback_handler_confirms_action(tmp_path: Path) -> None:
     asyncio.run(bot.approval_callback_handler(update, FakeContext(bot=FakeBot())))
 
     assert assistant.confirm_calls == [(10, 20, "abc123")]
-    assert query.answers[0]["text"] == "Action processed."
-    assert query.edits == ["✅ Approved — Created task."]
+    assert query.answers[0]["text"] == "Done."
+    assert query.edits == ["✅ Approved — Task created."]
 
 
 def test_approval_callback_handler_rejects_action(tmp_path: Path) -> None:
@@ -449,7 +447,7 @@ def test_approval_callback_handler_rejects_action(tmp_path: Path) -> None:
     asyncio.run(bot.approval_callback_handler(update, FakeContext(bot=FakeBot())))
 
     assert assistant.reject_calls == [(10, 20, "abc123")]
-    assert query.answers[0]["text"] == "Action processed."
+    assert query.answers[0]["text"] == "Done."
     assert query.edits == ["❌ Rejected — Rejected pending action abc123"]
 
 
@@ -485,7 +483,7 @@ def test_approval_callback_handler_respects_allowed_chat_ids(tmp_path: Path) -> 
     asyncio.run(bot.approval_callback_handler(update, FakeContext(bot=FakeBot())))
 
     assert assistant.confirm_calls == []
-    assert query.answers[0]["text"] == "This bot is not enabled for this chat."
+    assert query.answers[0]["text"] == "Bot not enabled for this chat."
     assert query.answers[0]["show_alert"] is True
 
 
@@ -501,14 +499,14 @@ def test_reminder_add_interactive_flow_creates_pending_approval(tmp_path: Path) 
     start_message = FakeMessage()
     start_update = FakeUpdate(effective_message=start_message, effective_chat=FakeChat(10), effective_user=FakeUser(20))
     asyncio.run(bot.reminder_handler(start_update, FakeContext(bot=FakeBot(), args=["add"])))
-    assert start_message.replies[0]["text"] == "What should I remind you about? Use /cancel to stop."
+    assert start_message.replies[0]["text"] == "Remind you about what? /cancel to stop."
 
     message_step = FakeMessage(text="Call mom")
     message_update = FakeUpdate(
         effective_message=message_step, effective_chat=FakeChat(10), effective_user=FakeUser(20)
     )
     asyncio.run(bot.chat_handler(message_update, FakeContext(bot=FakeBot())))
-    assert "When should I remind you?" in message_step.replies[0]["text"]
+    assert "When?" in message_step.replies[0]["text"]
 
     when_step = FakeMessage(text="tomorrow 09:30")
     when_update = FakeUpdate(effective_message=when_step, effective_chat=FakeChat(10), effective_user=FakeUser(20))
@@ -516,7 +514,7 @@ def test_reminder_add_interactive_flow_creates_pending_approval(tmp_path: Path) 
 
     assert assistant.pending_calls[-1]["action_type"] == "create_reminder"
     assert assistant.pending_calls[-1]["payload"] == {"when_local": "2026-04-02 09:30", "message": "Call mom"}
-    assert when_step.replies[0]["text"].startswith("Please confirm this request.")
+    assert when_step.replies[0]["text"].startswith("Confirm:")
 
 
 def test_calendar_tomorrow_formats_window_and_event_list(tmp_path: Path) -> None:
@@ -545,9 +543,7 @@ def test_recover_approval_from_history_ignores_confirmation_prompts(tmp_path: Pa
         settings=build_settings(tmp_path), assistant=assistant, ai_client=FakeAIClient(), transcriber=FakeSpeechToText()
     )
 
-    history = [
-        type("Msg", (), {"role": "assistant", "content": "Please confirm this request.\n\nProposed action: ..."})
-    ]
+    history = [type("Msg", (), {"role": "assistant", "content": "Confirm:\n\nProposed action: ..."})]
 
     recovered = bot._recover_approval_from_history(chat_id=10, user_id=20, history=history)
 

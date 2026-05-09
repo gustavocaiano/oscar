@@ -70,9 +70,9 @@ class LocalSpeechTranscriber:
 
     def unavailable_message(self) -> str | None:
         if not self.enabled:
-            return "Local voice transcription is not enabled for this assistant."
+            return "Voice transcription is not enabled."
         if WhisperModel is None:
-            return "Local voice transcription is unavailable because faster-whisper is not installed."
+            return "Voice transcription unavailable: faster-whisper not installed."
         return None
 
     async def transcribe_file(self, audio_path: Path) -> TranscriptionResult:
@@ -80,7 +80,7 @@ class LocalSpeechTranscriber:
         if unavailable_message is not None:
             raise SpeechToTextUnavailableError(unavailable_message)
         if self._lock.locked():
-            raise SpeechToTextBusyError("Voice transcription is busy right now. Try again in a moment.")
+            raise SpeechToTextBusyError("Transcription busy. Try again in a moment.")
 
         async with self._lock:
             return await asyncio.to_thread(self._transcribe_file_sync, audio_path)
@@ -102,7 +102,7 @@ class LocalSpeechTranscriber:
 
         transcript_text = " ".join(segment.text.strip() for segment in segment_list if segment.text.strip()).strip()
         if not transcript_text:
-            raise SpeechToTextFailedError("Transcription returned no text.")
+            raise SpeechToTextFailedError("No speech detected.")
 
         return TranscriptionResult(
             text=transcript_text,
@@ -115,9 +115,7 @@ class LocalSpeechTranscriber:
         if self._model is not None:
             return self._model
         if WhisperModel is None:
-            raise SpeechToTextUnavailableError(
-                "Local voice transcription is unavailable because faster-whisper is not installed."
-            )
+            raise SpeechToTextUnavailableError("Voice transcription unavailable: faster-whisper not installed.")
 
         self.model_dir.mkdir(parents=True, exist_ok=True)
         logger.info(
@@ -137,7 +135,5 @@ class LocalSpeechTranscriber:
             except TypeError:
                 self._model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
         except Exception as exc:  # pragma: no cover - depends on local runtime/model availability
-            raise SpeechToTextUnavailableError(
-                f"Local voice transcription could not start with the current model/runtime settings: {exc}"
-            ) from exc
+            raise SpeechToTextUnavailableError(f"Voice transcription failed to start: {exc}") from exc
         return self._model

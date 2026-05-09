@@ -91,6 +91,7 @@ class ChatPreferences:
     last_morning_brief_on: str | None
     last_hour_reminder_on: str | None
     last_evening_wrap_up_on: str | None
+    hourly_rate: float | None = None
 
 
 class SQLiteStorage:
@@ -125,6 +126,7 @@ class SQLiteStorage:
                     last_morning_brief_on TEXT,
                     last_hour_reminder_on TEXT,
                     last_evening_wrap_up_on TEXT,
+                    hourly_rate REAL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -237,6 +239,12 @@ class SQLiteStorage:
                 """
             )
 
+        # Migrate existing databases: add hourly_rate column if missing
+        with self._connect() as connection:
+            columns = [row[1] for row in connection.execute("PRAGMA table_info(chat_preferences)").fetchall()]
+            if "hourly_rate" not in columns:
+                connection.execute("ALTER TABLE chat_preferences ADD COLUMN hourly_rate REAL")
+
     def _now(self) -> str:
         return datetime.now(UTC).isoformat()
 
@@ -302,6 +310,7 @@ class SQLiteStorage:
                 last_morning_brief_on=row["last_morning_brief_on"],
                 last_hour_reminder_on=row["last_hour_reminder_on"],
                 last_evening_wrap_up_on=row["last_evening_wrap_up_on"],
+                hourly_rate=row["hourly_rate"],
             )
 
     def get_chat_preferences(self, chat_id: int) -> ChatPreferences:
@@ -326,6 +335,7 @@ class SQLiteStorage:
             last_morning_brief_on=row["last_morning_brief_on"],
             last_hour_reminder_on=row["last_hour_reminder_on"],
             last_evening_wrap_up_on=row["last_evening_wrap_up_on"],
+            hourly_rate=row["hourly_rate"],
         )
 
     def list_chat_preferences(self) -> list[ChatPreferences]:
@@ -346,6 +356,7 @@ class SQLiteStorage:
                 last_morning_brief_on=row["last_morning_brief_on"],
                 last_hour_reminder_on=row["last_hour_reminder_on"],
                 last_evening_wrap_up_on=row["last_evening_wrap_up_on"],
+                hourly_rate=row["hourly_rate"],
             )
             for row in rows
         ]
@@ -365,6 +376,7 @@ class SQLiteStorage:
             "last_morning_brief_on",
             "last_hour_reminder_on",
             "last_evening_wrap_up_on",
+            "hourly_rate",
         }
         unknown = set(updates) - allowed
         if unknown:
