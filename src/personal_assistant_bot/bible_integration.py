@@ -190,7 +190,7 @@ class ABibliaDigitalClient:
             raise BibleIntegrationError("Resposta incompleta da Bíblia")
 
         try:
-            payload_chapter = int(chapter_payload.get("number"))
+            payload_chapter = int(chapter_payload.get("number") or 0)
         except (TypeError, ValueError) as exc:
             raise BibleIntegrationError("Número de capítulo inválido na resposta da Bíblia") from exc
         if payload_chapter != chapter:
@@ -201,7 +201,7 @@ class ABibliaDigitalClient:
             if not isinstance(raw_verse, dict):
                 continue
             try:
-                number = int(raw_verse.get("number"))
+                number = int(raw_verse.get("number") or 0)
             except (TypeError, ValueError):
                 continue
             text = str(raw_verse.get("text") or "").strip()

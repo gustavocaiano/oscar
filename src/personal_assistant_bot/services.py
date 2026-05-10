@@ -5,7 +5,6 @@ import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
-from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
