@@ -25,7 +25,7 @@ from personal_assistant_bot.ai import AIBackendError, AIResponse, OpenAICompatib
 from personal_assistant_bot.calendar_integration import CalendarEvent
 from personal_assistant_bot.config import Settings
 from personal_assistant_bot.hours import parse_getmm
-from personal_assistant_bot.services import AssistantError, AssistantService, PendingApproval
+from personal_assistant_bot.services import AssistantError, AssistantService, BibleChapterDelivery, PendingApproval
 from personal_assistant_bot.speech import (
     LocalSpeechTranscriber,
     SpeechToTextBusyError,
@@ -37,6 +37,7 @@ from personal_assistant_bot.storage import ChatMessage, ListItem, NoteItem, Remi
 logger = logging.getLogger(__name__)
 
 APPROVAL_CALLBACK_PATTERN = re.compile(r"^(approve|reject):([0-9a-f]+)$")
+BIBLE_CALLBACK_PATTERN = re.compile(r"^bible:(read|dismiss)$")
 
 
 @dataclass
@@ -57,6 +58,7 @@ ROOT_COMMANDS = [
     BotCommand("rem", "Reminder commands"),
     BotCommand("cal", "Calendar commands"),
     BotCommand("h", "Hour tracking + earnings"),
+    BotCommand("biblia", "Leitura bíblica diária"),
     BotCommand("pref", "Preference commands"),
     BotCommand("cancel", "Cancel current interactive flow"),
     BotCommand("confirm", "Confirm a pending AI action"),
@@ -96,10 +98,12 @@ class PersonalAssistantBot:
         application.add_handler(CommandHandler("rem", self.reminder_handler))
         application.add_handler(CommandHandler("cal", self.calendar_handler))
         application.add_handler(CommandHandler("h", self.hours_handler))
+        application.add_handler(CommandHandler("biblia", self.bible_handler))
         application.add_handler(CommandHandler("pref", self.preference_handler))
         application.add_handler(CommandHandler("cancel", self.cancel_handler))
         application.add_handler(CommandHandler("confirm", self.confirm_handler))
         application.add_handler(CommandHandler("reject", self.reject_handler))
+        application.add_handler(CallbackQueryHandler(self.bible_callback_handler, pattern=r"^bible:"))
         application.add_handler(CallbackQueryHandler(self.approval_callback_handler, pattern=r"^(approve|reject):"))
         application.add_handler(MessageHandler(filters.VOICE, self.voice_handler))
         application.add_handler(MessageHandler(filters.AUDIO, self.unsupported_audio_handler))
@@ -338,6 +342,23 @@ class PersonalAssistantBot:
         except (AssistantError, ValueError) as exc:
             await msg.reply_text(str(exc))
 
+    async def bible_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._ensure_access(update):
+            return
+        msg = self._msg(update)
+        chat_id, user_id = self._chat_and_user(update)
+        subcommand = context.args[0].lower() if context.args else "status"
+        try:
+            if subcommand in {"ler", "read", "next", "proximo", "próximo"}:
+                await self._send_next_bible_chapter(chat_id=chat_id, user_id=user_id, context=context)
+                return
+            if subcommand in {"status", "show"}:
+                await msg.reply_text(self.assistant.get_bible_status(chat_id=chat_id, user_id=user_id))
+                return
+            raise AssistantError("Comandos: /biblia · /biblia ler")
+        except (AssistantError, ValueError) as exc:
+            await msg.reply_text(str(exc))
+
     async def preference_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._ensure_access(update):
             return
@@ -471,6 +492,42 @@ class PersonalAssistantBot:
         await query.answer("Done.")
         if query.message is not None:
             await query.edit_message_text(final_text)
+
+    async def bible_callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if query is None:
+            return
+
+        action = self._parse_bible_callback_data(query.data)
+        if action is None:
+            await query.answer("Ação inválida.", show_alert=True)
+            return
+        if update.effective_chat is None or update.effective_user is None:
+            await query.answer("Contexto do chat ausente.", show_alert=True)
+            return
+        if self.settings.allowed_chat_ids and update.effective_chat.id not in self.settings.allowed_chat_ids:
+            await query.answer("Bot não habilitado para este chat.", show_alert=True)
+            return
+
+        if action == "dismiss":
+            await query.answer("Tudo bem.")
+            if query.message is not None:
+                await query.edit_message_text("📖 Tudo bem — te lembro amanhã.")
+            return
+
+        try:
+            await self._send_next_bible_chapter(
+                chat_id=update.effective_chat.id,
+                user_id=update.effective_user.id,
+                context=context,
+            )
+        except AssistantError as exc:
+            await query.answer(str(exc), show_alert=True)
+            return
+
+        await query.answer("Capítulo enviado.")
+        if query.message is not None:
+            await query.edit_message_text("📖 Capítulo enviado. Amanhã eu te lembro de novo.")
 
     async def voice_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._ensure_access(update):
@@ -650,7 +707,12 @@ class PersonalAssistantBot:
         notifications = self.assistant.get_due_notifications(now_utc=datetime.now(UTC))
         for notification in notifications:
             try:
-                await context.bot.send_message(chat_id=notification.chat_id, text=notification.text)
+                reply_markup = None
+                if notification.reply_markup_key == "bible_prompt":
+                    reply_markup = self._build_bible_prompt_keyboard()
+                await context.bot.send_message(
+                    chat_id=notification.chat_id, text=notification.text, reply_markup=reply_markup
+                )
                 self.assistant.mark_notification_delivered(notification)
             except Exception:
                 logger.exception("Failed to deliver scheduled notification to chat %s", notification.chat_id)
@@ -1144,12 +1206,59 @@ class PersonalAssistantBot:
             "/h month 04\n"
             "/h euro\n"
             "/h config 35\n"
+            "/biblia\n"
+            "/biblia ler\n"
             "/pref show\n"
             "/cancel\n"
             "AI approval buttons appear automatically; /confirm TOKEN and /reject TOKEN as fallback.\n\n"
             "/task list shows numbered tasks. Use those numbers with /task rename or /task done.\n\n"
             "Send a voice note for transcription (if STT is enabled).\n\n"
             "Send any text to enter AI chat mode — it reads your data and asks before writing changes."
+        )
+
+    async def _send_next_bible_chapter(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        delivery = await self.assistant.prepare_next_bible_chapter(chat_id=chat_id, user_id=user_id)
+        resume = await self._build_bible_resume(delivery)
+        text = self.assistant.format_bible_chapter_text(delivery, resume=resume)
+        chunks = self.assistant.split_bible_message(text)
+        for chunk in chunks:
+            await context.bot.send_message(chat_id=chat_id, text=chunk)
+        self.assistant.mark_bible_chapter_delivered(delivery)
+
+    async def _build_bible_resume(self, delivery: BibleChapterDelivery) -> str | None:
+        if not self.ai_client.configured:
+            return None
+        raw_text = self.assistant.format_bible_chapter_text(delivery)
+        prompt = (
+            "Responda em português do Brasil. Faça um resumo devocional curto, respeitoso e não dogmático "
+            "do capítulo abaixo em no máximo 5 linhas. Não reescreva todos os versículos; o texto bíblico será enviado depois.\n\n"
+            f"{raw_text}"
+        )
+        try:
+            result = await self.ai_client.respond(user_message=prompt, history=[], tool_snapshot={})
+        except AIBackendError as exc:
+            logger.warning("Bible resume AI backend failure: %s", exc)
+            return None
+        if result.tool_plan or result.proposed_action:
+            logger.warning("Ignoring AI-proposed action while formatting Bible chapter")
+            return None
+        reply = result.reply.strip()
+        return reply or None
+
+    def _build_bible_prompt_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Ler capítulo", callback_data="bible:read"),
+                    InlineKeyboardButton("Hoje não", callback_data="bible:dismiss"),
+                ]
+            ]
         )
 
     def _build_approval_keyboard(self, approval: PendingApproval) -> InlineKeyboardMarkup:
@@ -1170,11 +1279,19 @@ class PersonalAssistantBot:
             return None
         return match.group(1), match.group(2)
 
+    def _parse_bible_callback_data(self, raw_data: str | None) -> str | None:
+        if not raw_data:
+            return None
+        match = BIBLE_CALLBACK_PATTERN.fullmatch(raw_data)
+        if match is None:
+            return None
+        return match.group(1)
+
     def _validate_voice_note_limits(self, voice: Voice) -> str | None:
         if voice.duration > self.settings.stt_max_duration_seconds:
             return f"Voice notes longer than {self.settings.stt_max_duration_seconds}s are not supported."
-            if voice.file_size is not None and voice.file_size > self.settings.stt_max_file_size_mb * 1024 * 1024:
-                return f"Voice notes larger than {self.settings.stt_max_file_size_mb} MB are not supported."
+        if voice.file_size is not None and voice.file_size > self.settings.stt_max_file_size_mb * 1024 * 1024:
+            return f"Voice notes larger than {self.settings.stt_max_file_size_mb} MB are not supported."
         return None
 
     async def _download_and_transcribe_voice_note(self, message, context: ContextTypes.DEFAULT_TYPE):

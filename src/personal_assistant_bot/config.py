@@ -47,6 +47,12 @@ class Settings:
     kbplus_todo_column_id: str | None = None
     kbplus_done_column_id: str | None = None
     kbplus_timeout_seconds: float = 10.0
+    bible_enabled: bool = False
+    bible_api_base_url: str = "https://www.abibliadigital.com.br/api"
+    bible_api_token: str | None = None
+    bible_translation: str = "nvi"
+    bible_daily_time: str = "09:00"
+    bible_timeout_seconds: float = 10.0
 
     @property
     def backend_enabled(self) -> bool:
@@ -65,6 +71,10 @@ class Settings:
             and self.kbplus_todo_column_id
             and self.kbplus_done_column_id
         )
+
+    @property
+    def bible_configured(self) -> bool:
+        return bool(self.bible_enabled and self.bible_api_base_url and self.bible_translation)
 
 
 def _required_env(name: str) -> str:
@@ -130,6 +140,13 @@ def _bool_env(name: str, default: bool) -> bool:
     raise ConfigurationError(f"Environment variable {name} must be a boolean")
 
 
+def _bible_translation_env(name: str, default: str) -> str:
+    translation = os.getenv(name, default).strip().lower() or default
+    if translation not in {"nvi", "acf", "ra", "arc"}:
+        raise ConfigurationError(f"Environment variable {name} must be one of: nvi, acf, ra, arc")
+    return translation
+
+
 def load_settings() -> Settings:
     log_level_name = os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"
     log_level = getattr(logging, log_level_name, None)
@@ -172,4 +189,13 @@ def load_settings() -> Settings:
         kbplus_todo_column_id=_optional_env("KBPLUS_TODO_COLUMN_ID"),
         kbplus_done_column_id=_optional_env("KBPLUS_DONE_COLUMN_ID"),
         kbplus_timeout_seconds=max(1.0, _float_env("KBPLUS_TIMEOUT_SECONDS", 10.0)),
+        bible_enabled=_bool_env("BIBLE_ENABLED", False),
+        bible_api_base_url=(
+            os.getenv("BIBLE_API_BASE_URL", "https://www.abibliadigital.com.br/api").strip()
+            or "https://www.abibliadigital.com.br/api"
+        ),
+        bible_api_token=_optional_env("BIBLE_API_TOKEN"),
+        bible_translation=_bible_translation_env("BIBLE_TRANSLATION", "nvi"),
+        bible_daily_time=os.getenv("BIBLE_DAILY_TIME", "09:00").strip() or "09:00",
+        bible_timeout_seconds=max(1.0, _float_env("BIBLE_TIMEOUT_SECONDS", 10.0)),
     )

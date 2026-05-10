@@ -9,11 +9,19 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from personal_assistant_bot.bible_integration import (
+    ABibliaDigitalClient,
+    BibleChapter,
+    BibleIntegrationError,
+    get_bible_book,
+    next_bible_position,
+)
 from personal_assistant_bot.calendar_integration import CalendarEvent, CalendarIntegrationError, CalendarService
 from personal_assistant_bot.config import Settings
 from personal_assistant_bot.hours import format_hours_total, format_subtotals, parse_hours
 from personal_assistant_bot.kbplus_integration import KbplusColumn, KbplusIntegrationError, KbplusTask, KbplusTaskClient
 from personal_assistant_bot.storage import (
+    BibleReadingProgress,
     ChatMessage,
     ChatPreferences,
     ListItem,
@@ -37,6 +45,15 @@ class ScheduledNotification:
     reminder_id: int | None = None
     claim_date: str | None = None
     preference_updates: dict[str, Any] | None = None
+    reply_markup_key: str | None = None
+
+
+@dataclass(frozen=True)
+class BibleChapterDelivery:
+    chat_id: int
+    user_id: int
+    chapter: BibleChapter
+    progress: BibleReadingProgress
 
 
 @dataclass(frozen=True)
@@ -68,11 +85,15 @@ class AssistantService:
         calendar: CalendarService,
         settings: Settings,
         kbplus: KbplusTaskClient | None = None,
+        bible: ABibliaDigitalClient | None = None,
     ):
         self.storage = storage
         self.calendar = calendar
         self.settings = settings
         self.kbplus = kbplus
+        self.bible = bible
+
+    BIBLE_MESSAGE_LIMIT: int = 3800
 
     def ensure_chat(self, *, chat_id: int, user_id: int) -> ChatPreferences:
         return self.storage.ensure_chat_preferences(
@@ -372,6 +393,8 @@ class AssistantService:
         return f"Month {target_month:02d}: {format_hours_total(total_hours)} × {rate_label} = {earnings:.0f}€"
 
     def set_hourly_rate(self, *, chat_id: int, user_id: int, rate: float) -> str:
+        if rate <= 0:
+            raise AssistantError("Hourly rate must be positive")
         self.ensure_chat(chat_id=chat_id, user_id=user_id)
         self.storage.update_chat_preferences(chat_id, hourly_rate=rate)
         rate_label = f"{rate:.0f}€/h" if rate == int(rate) else f"{rate}€/h"
@@ -515,6 +538,113 @@ class AssistantService:
             return self.calendar.create_event(start=start, end=end, summary=summary.strip(), description=description)
         except CalendarIntegrationError as exc:
             raise AssistantError(str(exc)) from exc
+
+    def _bible_enabled(self) -> bool:
+        return bool(self.settings.bible_configured and self.bible is not None and self.bible.configured)
+
+    def _require_bible_enabled(self) -> ABibliaDigitalClient:
+        if not self._bible_enabled():
+            raise AssistantError("Leitura bíblica não configurada.")
+        assert self.bible is not None
+        return self.bible
+
+    def _chat_bible_prompt_enabled(self, *, chat_id: int) -> bool:
+        progress = self.storage.get_bible_progress(chat_id=chat_id)
+        return progress is None or (progress.enabled and progress.completed_at is None)
+
+    def build_bible_prompt(self) -> str:
+        return "📖 Pronto para o próximo capítulo da Bíblia?"
+
+    def get_bible_status(self, *, chat_id: int, user_id: int) -> str:
+        self._require_bible_enabled()
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        progress = self.storage.ensure_bible_progress(
+            chat_id=chat_id,
+            user_id=user_id,
+            translation=self.settings.bible_translation,
+        )
+        if progress.completed_at is not None or progress.next_book is None or progress.next_chapter is None:
+            return "📖 Leitura bíblica concluída."
+        book = get_bible_book(progress.next_book)
+        return f"📖 Próximo capítulo: {book.name} {progress.next_chapter} ({progress.translation.upper()}). Use /biblia ler para receber."
+
+    async def prepare_next_bible_chapter(self, *, chat_id: int, user_id: int) -> BibleChapterDelivery:
+        bible = self._require_bible_enabled()
+        self.ensure_chat(chat_id=chat_id, user_id=user_id)
+        progress = self.storage.ensure_bible_progress(
+            chat_id=chat_id,
+            user_id=user_id,
+            translation=self.settings.bible_translation,
+        )
+        if not progress.enabled:
+            raise AssistantError("Leitura bíblica desativada para este chat.")
+        if progress.completed_at is not None or progress.next_book is None or progress.next_chapter is None:
+            raise AssistantError("Leitura bíblica concluída.")
+
+        try:
+            chapter = await bible.fetch_chapter(
+                translation=progress.translation,
+                book_abbrev=progress.next_book,
+                chapter=progress.next_chapter,
+            )
+        except BibleIntegrationError as exc:
+            raise AssistantError(f"Não consegui buscar o capítulo agora: {exc}") from exc
+
+        return BibleChapterDelivery(chat_id=chat_id, user_id=user_id, chapter=chapter, progress=progress)
+
+    def mark_bible_chapter_delivered(self, delivery: BibleChapterDelivery) -> None:
+        next_position = next_bible_position(delivery.chapter.book_abbrev, delivery.chapter.chapter)
+        next_book, next_chapter = next_position if next_position is not None else (None, None)
+        advanced = self.storage.advance_bible_progress(
+            chat_id=delivery.chat_id,
+            current_book=delivery.chapter.book_abbrev,
+            current_chapter=delivery.chapter.chapter,
+            next_book=next_book,
+            next_chapter=next_chapter,
+        )
+        if not advanced:
+            raise AssistantError("Este capítulo já foi registrado ou o progresso mudou.")
+
+    def format_bible_chapter_text(self, delivery: BibleChapterDelivery, *, resume: str | None = None) -> str:
+        chapter = delivery.chapter
+        lines = [f"📖 {chapter.book_name} {chapter.chapter} ({chapter.translation.upper()})"]
+        clean_resume = resume.strip() if resume else ""
+        if clean_resume:
+            lines.extend(["", "Resumo:", clean_resume])
+        lines.append("")
+        lines.extend(f"{verse.number}. {verse.text}" for verse in chapter.verses)
+        return "\n".join(lines).strip()
+
+    def split_bible_message(self, text: str, *, limit: int | None = None) -> list[str]:
+        max_length = limit or self.BIBLE_MESSAGE_LIMIT
+        if len(text) <= max_length:
+            return [text]
+
+        chunks: list[str] = []
+        current_lines: list[str] = []
+        current_length = 0
+        for raw_line in text.splitlines():
+            line = raw_line.rstrip()
+            line_length = len(line) + 1
+            if current_lines and current_length + line_length > max_length:
+                chunks.append("\n".join(current_lines).rstrip())
+                current_lines = []
+                current_length = 0
+
+            while len(line) + 1 > max_length:
+                if current_lines:
+                    chunks.append("\n".join(current_lines).rstrip())
+                    current_lines = []
+                    current_length = 0
+                chunks.append(line[:max_length])
+                line = line[max_length:]
+
+            current_lines.append(line)
+            current_length += len(line) + 1
+
+        if current_lines:
+            chunks.append("\n".join(current_lines).rstrip())
+        return [chunk for chunk in chunks if chunk]
 
     def _kbplus_enabled(self) -> bool:
         return bool(self.kbplus and self.kbplus.configured)
@@ -1277,17 +1407,43 @@ class AssistantService:
                     )
                 )
 
+            if self._should_send_daily(
+                enabled=self._bible_enabled() and self._chat_bible_prompt_enabled(chat_id=preferences.chat_id),
+                local_now=local_now,
+                target_time=self.settings.bible_daily_time,
+                last_sent_on=None,
+            ) and self.storage.claim_daily_bible_prompt(
+                chat_id=preferences.chat_id,
+                prompt_date=local_date,
+                stale_after_seconds=max(60, self.settings.reminder_scan_seconds * 5),
+            ):
+                due_notifications.append(
+                    ScheduledNotification(
+                        chat_id=preferences.chat_id,
+                        text=self.build_bible_prompt(),
+                        notification_type="bible_prompt",
+                        claim_date=local_date,
+                        reply_markup_key="bible_prompt",
+                    )
+                )
+
         return due_notifications
 
     def mark_notification_delivered(self, notification: ScheduledNotification) -> None:
         if notification.reminder_id is not None:
             self.storage.mark_reminder_sent(notification.reminder_id)
         if notification.claim_date is not None:
-            self.storage.mark_scheduled_notification_sent(
-                chat_id=notification.chat_id,
-                notification_type=notification.notification_type,
-                claim_date=notification.claim_date,
-            )
+            if notification.notification_type == "bible_prompt":
+                self.storage.mark_daily_bible_prompt_sent(
+                    chat_id=notification.chat_id,
+                    prompt_date=notification.claim_date,
+                )
+            else:
+                self.storage.mark_scheduled_notification_sent(
+                    chat_id=notification.chat_id,
+                    notification_type=notification.notification_type,
+                    claim_date=notification.claim_date,
+                )
         if notification.preference_updates:
             self.storage.update_chat_preferences(notification.chat_id, **notification.preference_updates)
 
@@ -1295,11 +1451,17 @@ class AssistantService:
         if notification.reminder_id is not None:
             self.storage.reset_reminder_pending(notification.reminder_id)
         if notification.claim_date is not None:
-            self.storage.release_scheduled_notification_claim(
-                chat_id=notification.chat_id,
-                notification_type=notification.notification_type,
-                claim_date=notification.claim_date,
-            )
+            if notification.notification_type == "bible_prompt":
+                self.storage.release_daily_bible_prompt_claim(
+                    chat_id=notification.chat_id,
+                    prompt_date=notification.claim_date,
+                )
+            else:
+                self.storage.release_scheduled_notification_claim(
+                    chat_id=notification.chat_id,
+                    notification_type=notification.notification_type,
+                    claim_date=notification.claim_date,
+                )
 
     def _should_send_daily(
         self,

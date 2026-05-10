@@ -4,6 +4,7 @@ import logging
 import sys
 
 from personal_assistant_bot.ai import OpenAICompatibleAI
+from personal_assistant_bot.bible_integration import ABibliaDigitalClient
 from personal_assistant_bot.bot import PersonalAssistantBot
 from personal_assistant_bot.calendar_integration import CalendarService
 from personal_assistant_bot.config import ConfigurationError, load_settings
@@ -37,7 +38,18 @@ def main() -> None:
         done_column_id=settings.kbplus_done_column_id,
         timeout_seconds=settings.kbplus_timeout_seconds,
     )
-    assistant = AssistantService(storage=storage, calendar=calendar_service, settings=settings, kbplus=kbplus_client)
+    bible_client = ABibliaDigitalClient(
+        base_url=settings.bible_api_base_url,
+        api_token=settings.bible_api_token,
+        timeout_seconds=settings.bible_timeout_seconds,
+    )
+    assistant = AssistantService(
+        storage=storage,
+        calendar=calendar_service,
+        settings=settings,
+        kbplus=kbplus_client,
+        bible=bible_client,
+    )
     ai_client = OpenAICompatibleAI(
         base_url=settings.backend_base_url,
         api_key=settings.backend_api_key,

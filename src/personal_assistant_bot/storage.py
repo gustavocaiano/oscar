@@ -94,6 +94,21 @@ class ChatPreferences:
     hourly_rate: float | None = None
 
 
+@dataclass(frozen=True)
+class BibleReadingProgress:
+    chat_id: int
+    user_id: int
+    enabled: bool
+    translation: str
+    next_book: str | None
+    next_chapter: int | None
+    chapters_read: int
+    completed_at: str | None
+    last_read_at: str | None
+    created_at: str
+    updated_at: str
+
+
 class SQLiteStorage:
     def __init__(self, database_path: Path):
         self.database_path = database_path
@@ -211,6 +226,29 @@ class SQLiteStorage:
                     PRIMARY KEY (chat_id, notification_type, claim_date)
                 );
 
+                CREATE TABLE IF NOT EXISTS bible_reading_progress (
+                    chat_id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    translation TEXT NOT NULL,
+                    next_book TEXT,
+                    next_chapter INTEGER,
+                    chapters_read INTEGER NOT NULL DEFAULT 0,
+                    completed_at TEXT,
+                    last_read_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS bible_daily_prompt_claims (
+                    chat_id INTEGER NOT NULL,
+                    prompt_date TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('claiming', 'sent')),
+                    claimed_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (chat_id, prompt_date)
+                );
+
                 CREATE TABLE IF NOT EXISTS hour_entries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
@@ -253,6 +291,22 @@ class SQLiteStorage:
         if last_id is None:
             raise RuntimeError("INSERT failed to return a row ID")
         return last_id
+
+    def _bible_progress_from_row(self, row: sqlite3.Row) -> BibleReadingProgress:
+        next_chapter = row["next_chapter"]
+        return BibleReadingProgress(
+            chat_id=int(row["chat_id"]),
+            user_id=int(row["user_id"]),
+            enabled=bool(row["enabled"]),
+            translation=str(row["translation"]),
+            next_book=row["next_book"],
+            next_chapter=int(next_chapter) if next_chapter is not None else None,
+            chapters_read=int(row["chapters_read"]),
+            completed_at=row["completed_at"],
+            last_read_at=row["last_read_at"],
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
 
     def ensure_chat_preferences(
         self,
@@ -413,6 +467,140 @@ class SQLiteStorage:
                     (new_value, self._now(), chat_id, expected),
                 )
             return cursor.rowcount > 0
+
+    def get_bible_progress(self, *, chat_id: int) -> BibleReadingProgress | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM bible_reading_progress WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._bible_progress_from_row(row)
+
+    def ensure_bible_progress(self, *, chat_id: int, user_id: int, translation: str) -> BibleReadingProgress:
+        now = self._now()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM bible_reading_progress WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    """
+                    INSERT INTO bible_reading_progress (
+                        chat_id, user_id, enabled, translation, next_book, next_chapter,
+                        chapters_read, created_at, updated_at
+                    ) VALUES (?, ?, 1, ?, 'gn', 1, 0, ?, ?)
+                    """,
+                    (chat_id, user_id, translation, now, now),
+                )
+            elif str(row["translation"]) != translation or int(row["user_id"]) != user_id:
+                connection.execute(
+                    """
+                    UPDATE bible_reading_progress
+                    SET user_id = ?, translation = ?, updated_at = ?
+                    WHERE chat_id = ?
+                    """,
+                    (user_id, translation, now, chat_id),
+                )
+            row = connection.execute(
+                "SELECT * FROM bible_reading_progress WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("Bible reading progress not found")
+        return self._bible_progress_from_row(row)
+
+    def set_bible_progress(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        translation: str,
+        next_book: str | None,
+        next_chapter: int | None,
+        chapters_read: int = 0,
+        completed_at: str | None = None,
+    ) -> BibleReadingProgress:
+        now = self._now()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO bible_reading_progress (
+                    chat_id, user_id, enabled, translation, next_book, next_chapter,
+                    chapters_read, completed_at, created_at, updated_at
+                ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    translation = excluded.translation,
+                    next_book = excluded.next_book,
+                    next_chapter = excluded.next_chapter,
+                    chapters_read = excluded.chapters_read,
+                    completed_at = excluded.completed_at,
+                    updated_at = excluded.updated_at
+                """,
+                (chat_id, user_id, translation, next_book, next_chapter, chapters_read, completed_at, now, now),
+            )
+        progress = self.get_bible_progress(chat_id=chat_id)
+        if progress is None:
+            raise LookupError("Bible reading progress not found")
+        return progress
+
+    def advance_bible_progress(
+        self,
+        *,
+        chat_id: int,
+        current_book: str,
+        current_chapter: int,
+        next_book: str | None,
+        next_chapter: int | None,
+    ) -> bool:
+        now = self._now()
+        completed_at = now if next_book is None or next_chapter is None else None
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE bible_reading_progress
+                SET next_book = ?, next_chapter = ?, chapters_read = chapters_read + 1,
+                    completed_at = ?, last_read_at = ?, updated_at = ?
+                WHERE chat_id = ? AND next_book = ? AND next_chapter = ? AND completed_at IS NULL
+                """,
+                (next_book, next_chapter, completed_at, now, now, chat_id, current_book, current_chapter),
+            )
+            return cursor.rowcount > 0
+
+    def claim_daily_bible_prompt(self, *, chat_id: int, prompt_date: str, stale_after_seconds: int) -> bool:
+        now = datetime.now(UTC)
+        stale_before = (now - timedelta(seconds=stale_after_seconds)).isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM bible_daily_prompt_claims WHERE chat_id = ? AND prompt_date = ? AND status = 'claiming' AND claimed_at <= ?",
+                (chat_id, prompt_date, stale_before),
+            )
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO bible_daily_prompt_claims (
+                    chat_id, prompt_date, status, claimed_at, updated_at
+                ) VALUES (?, ?, 'claiming', ?, ?)
+                """,
+                (chat_id, prompt_date, now.isoformat(), now.isoformat()),
+            )
+            return cursor.rowcount > 0
+
+    def mark_daily_bible_prompt_sent(self, *, chat_id: int, prompt_date: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE bible_daily_prompt_claims SET status = 'sent', updated_at = ? WHERE chat_id = ? AND prompt_date = ? AND status = 'claiming'",
+                (self._now(), chat_id, prompt_date),
+            )
+
+    def release_daily_bible_prompt_claim(self, *, chat_id: int, prompt_date: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM bible_daily_prompt_claims WHERE chat_id = ? AND prompt_date = ? AND status = 'claiming'",
+                (chat_id, prompt_date),
+            )
 
     def create_list_item(self, *, user_id: int, chat_id: int, kind: str, title: str) -> int:
         now = self._now()
