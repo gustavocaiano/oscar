@@ -1282,11 +1282,8 @@ class AssistantService:
                 lines.append(f"  • [{item['kind']}] {item['content'][:70]}")
 
         hours_info = snapshot["hours"]
-        hours_rate = hours_info.get("hourly_rate", self.DEFAULT_HOURLY_RATE)
         month_hours_str = hours_info["month_total"]
-        month_hours_raw = Decimal(hours_info.get("month_total_raw", "0"))
-        month_euro = float(month_hours_raw) * hours_rate
-        lines.append(f"- Month: {month_hours_str} (~{month_euro:.0f}€)")
+        lines.append(f"- Month: {month_hours_str}")
 
         if agenda:
             lines.append("- Upcoming calendar:")
